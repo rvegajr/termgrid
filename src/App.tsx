@@ -70,7 +70,6 @@ function App() {
   const [panes, setPanes] = createSignal<PaneState[]>([]);
   const [tabs, setTabs] = createSignal<TabState[]>([]);
   const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
-  const [zoomedPaneId, setZoomedPaneId] = createSignal<string | null>(null);
   const [shells, setShells] = createSignal<ipc.ShellInfo[]>([]);
   const [defaultShellInfo, setDefaultShellInfo] = createSignal<ipc.ShellInfo | null>(null);
   const [layoutPreset, setLayoutPreset] = createSignal<LayoutPreset>("auto");

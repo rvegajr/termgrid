@@ -51,6 +51,7 @@ describe('Layout Engine', () => {
     expect(layout[0].y).toBe(0);
     expect(layout[1].y).toBe(0);
     expect(layout[2].y).toBe(0);
+    expect(layout[0].width).toBeCloseTo(topWidth);
     expect(layout[0].height).toBe(50);
     // Bottom row: 2 panes
     expect(layout[3].y).toBe(50);
