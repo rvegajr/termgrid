@@ -34,9 +34,9 @@ fn test_shell_kind_detected_correctly() {
             ShellKind::Bash => assert!(shell.path.contains("bash")),
             ShellKind::Zsh => assert!(shell.path.contains("zsh")),
             ShellKind::Fish => assert!(shell.path.contains("fish")),
-            ShellKind::PowerShell => assert!(
-                shell.path.contains("powershell") || shell.path.contains("pwsh")
-            ),
+            ShellKind::PowerShell => {
+                assert!(shell.path.contains("powershell") || shell.path.contains("pwsh"))
+            }
             ShellKind::Cmd => assert!(shell.path.contains("cmd")),
             ShellKind::GitBash => assert!(shell.path.contains("bash")),
             ShellKind::Nushell => assert!(shell.path.contains("nu")),
@@ -106,7 +106,10 @@ fn test_list_active_shows_spawned_panes() {
     let manager = PtyManager::new();
     let detector = SystemShellDetector::new();
     let shell = detector.default_shell();
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     manager
         .spawn(&"pane-a".to_string(), &shell.path, &cwd, 80, 24)
@@ -128,7 +131,10 @@ fn test_killed_pane_removed_from_active() {
     let manager = PtyManager::new();
     let detector = SystemShellDetector::new();
     let shell = detector.default_shell();
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     manager
         .spawn(&"pane-kill".to_string(), &shell.path, &cwd, 80, 24)
@@ -159,7 +165,10 @@ fn test_duplicate_pane_id_returns_error() {
     let manager = PtyManager::new();
     let detector = SystemShellDetector::new();
     let shell = detector.default_shell();
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     manager
         .spawn(&"dup-pane".to_string(), &shell.path, &cwd, 80, 24)
@@ -175,7 +184,10 @@ fn test_write_sends_data_to_pty() {
     let manager = PtyManager::new();
     let detector = SystemShellDetector::new();
     let shell = detector.default_shell();
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     manager
         .spawn(&"write-test".to_string(), &shell.path, &cwd, 80, 24)
@@ -193,7 +205,10 @@ fn test_resize_changes_dimensions() {
     let manager = PtyManager::new();
     let detector = SystemShellDetector::new();
     let shell = detector.default_shell();
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     manager
         .spawn(&"resize-test".to_string(), &shell.path, &cwd, 80, 24)
@@ -210,7 +225,10 @@ fn test_read_receives_output() {
     let manager = PtyManager::new();
     let detector = SystemShellDetector::new();
     let shell = detector.default_shell();
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     manager
         .spawn(&"read-test".to_string(), &shell.path, &cwd, 80, 24)

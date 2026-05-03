@@ -47,11 +47,22 @@ impl HistoryState {
         self.db.lock().map_err(|e| e.to_string())?.insert(&row)
     }
 
-    pub fn search(&self, scope: HistoryScope, query: &str, limit: u32) -> Result<Vec<HistoryRecord>, String> {
-        self.db.lock().map_err(|e| e.to_string())?.search(scope, query, limit)
+    pub fn search(
+        &self,
+        scope: HistoryScope,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<HistoryRecord>, String> {
+        self.db
+            .lock()
+            .map_err(|e| e.to_string())?
+            .search(scope, query, limit)
     }
 
     pub fn recent(&self, pane_id: &str, limit: u32) -> Result<Vec<HistoryRecord>, String> {
-        self.db.lock().map_err(|e| e.to_string())?.recent(pane_id, limit)
+        self.db
+            .lock()
+            .map_err(|e| e.to_string())?
+            .recent(pane_id, limit)
     }
 }

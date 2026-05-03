@@ -38,23 +38,30 @@ impl SystemShellDetector {
             "ion" => ("Ion".into(), ShellKind::Other),
             "osh" | "oil" => ("Oil".into(), ShellKind::Other),
             "sh" => ("Sh".into(), ShellKind::Other),
-            other if !other.is_empty() => (
-                other[..1].to_uppercase() + &other[1..],
-                ShellKind::Other,
-            ),
+            other if !other.is_empty() => {
+                (other[..1].to_uppercase() + &other[1..], ShellKind::Other)
+            }
             _ => ("Shell".into(), ShellKind::Other),
         }
     }
 
     fn add(shells: &mut Vec<ShellInfo>, seen: &mut HashSet<String>, path: &str) {
-        if path.is_empty() { return; }
+        if path.is_empty() {
+            return;
+        }
         let canon = std::fs::canonicalize(path)
             .ok()
             .and_then(|p| p.to_str().map(|s| s.to_string()))
             .unwrap_or_else(|| path.to_string());
-        if !seen.insert(canon.clone()) { return; }
+        if !seen.insert(canon.clone()) {
+            return;
+        }
         let (name, kind) = Self::classify(path);
-        shells.push(ShellInfo { name, path: path.to_string(), kind });
+        shells.push(ShellInfo {
+            name,
+            path: path.to_string(),
+            kind,
+        });
     }
 
     /// Walk every directory in PATH, looking for any of `binaries`.
@@ -90,7 +97,9 @@ impl SystemShellDetector {
         if let Ok(contents) = std::fs::read_to_string("/etc/shells") {
             for line in contents.lines() {
                 let line = line.trim();
-                if line.is_empty() || line.starts_with('#') { continue; }
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
                 if Path::new(line).exists() {
                     Self::add(&mut shells, &mut seen, line);
                 }
@@ -98,17 +107,32 @@ impl SystemShellDetector {
         }
 
         // 3) Walk PATH for known shells we might have missed (homebrew, scoop, etc.).
-        let bins = ["zsh", "bash", "fish", "nu", "elvish", "xonsh", "ion", "tcsh", "ksh", "dash", "osh", "pwsh"];
+        let bins = [
+            "zsh", "bash", "fish", "nu", "elvish", "xonsh", "ion", "tcsh", "ksh", "dash", "osh",
+            "pwsh",
+        ];
         for p in Self::from_path(&bins) {
             Self::add(&mut shells, &mut seen, &p);
         }
 
         // 4) Backstop — well-known absolute paths on macOS / Linux.
         let backstops = [
-            "/bin/zsh", "/bin/bash", "/bin/sh", "/bin/dash",
-            "/usr/bin/zsh", "/usr/bin/bash", "/usr/bin/fish", "/usr/bin/nu",
-            "/usr/local/bin/zsh", "/usr/local/bin/bash", "/usr/local/bin/fish", "/usr/local/bin/nu",
-            "/opt/homebrew/bin/zsh", "/opt/homebrew/bin/bash", "/opt/homebrew/bin/fish", "/opt/homebrew/bin/nu",
+            "/bin/zsh",
+            "/bin/bash",
+            "/bin/sh",
+            "/bin/dash",
+            "/usr/bin/zsh",
+            "/usr/bin/bash",
+            "/usr/bin/fish",
+            "/usr/bin/nu",
+            "/usr/local/bin/zsh",
+            "/usr/local/bin/bash",
+            "/usr/local/bin/fish",
+            "/usr/local/bin/nu",
+            "/opt/homebrew/bin/zsh",
+            "/opt/homebrew/bin/bash",
+            "/opt/homebrew/bin/fish",
+            "/opt/homebrew/bin/nu",
         ];
         for p in backstops {
             if Path::new(p).exists() {
@@ -160,11 +184,15 @@ impl SystemShellDetector {
         }
 
         // 6) WSL — list distros via `wsl.exe -l -q` (UTF-16LE output, hence the dance).
-        if let Ok(output) = std::process::Command::new("wsl.exe").args(["-l", "-q"]).output() {
+        if let Ok(output) = std::process::Command::new("wsl.exe")
+            .args(["-l", "-q"])
+            .output()
+        {
             if output.status.success() {
                 let bytes = output.stdout;
                 // wsl.exe emits UTF-16LE; decode best-effort.
-                let utf16: Vec<u16> = bytes.chunks_exact(2)
+                let utf16: Vec<u16> = bytes
+                    .chunks_exact(2)
                     .map(|c| u16::from_le_bytes([c[0], c[1]]))
                     .collect();
                 let text = String::from_utf16_lossy(&utf16);
@@ -172,7 +200,11 @@ impl SystemShellDetector {
                     let path = "wsl.exe".to_string();
                     let name = format!("WSL: {}", distro);
                     if seen.insert(format!("wsl::{}", distro)) {
-                        shells.push(ShellInfo { name, path, kind: ShellKind::Other });
+                        shells.push(ShellInfo {
+                            name,
+                            path,
+                            kind: ShellKind::Other,
+                        });
                     }
                 }
             }

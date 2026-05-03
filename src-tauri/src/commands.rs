@@ -1,8 +1,8 @@
 use crate::pty::traits::*;
 use crate::state::AppState;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
 use std::thread;
+use tauri::{AppHandle, Emitter, State};
 
 #[derive(Serialize)]
 pub struct CreatePaneResult {
@@ -44,7 +44,13 @@ pub fn create_pane(
 
     state
         .pty_spawner
-        .spawn(&pane_id, &shell_path, &cwd, cols.unwrap_or(80), rows.unwrap_or(24))
+        .spawn(
+            &pane_id,
+            &shell_path,
+            &cwd,
+            cols.unwrap_or(80),
+            rows.unwrap_or(24),
+        )
         .map_err(|e| e.to_string())?;
 
     // Start streaming PTY output to frontend
@@ -56,10 +62,13 @@ pub fn create_pane(
     let pid = pane_id.clone();
     thread::spawn(move || {
         while let Ok(data) = rx.recv() {
-            let _ = app.emit("pty-output", PtyOutputEvent {
-                pane_id: pid.clone(),
-                data,
-            });
+            let _ = app.emit(
+                "pty-output",
+                PtyOutputEvent {
+                    pane_id: pid.clone(),
+                    data,
+                },
+            );
         }
     });
 

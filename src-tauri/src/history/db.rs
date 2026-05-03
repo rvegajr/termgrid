@@ -50,8 +50,10 @@ impl HistoryDb {
     pub fn open() -> Result<Self, String> {
         let path = db_path()?;
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
-        conn.pragma_update(None, "journal_mode", "WAL").map_err(|e| e.to_string())?;
-        conn.pragma_update(None, "synchronous", "NORMAL").map_err(|e| e.to_string())?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(|e| e.to_string())?;
+        conn.pragma_update(None, "synchronous", "NORMAL")
+            .map_err(|e| e.to_string())?;
         conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
         Ok(Self { conn })
     }
@@ -82,11 +84,19 @@ impl HistoryDb {
             "SELECT id, pane_id, session_id, shell, cwd, cmd, exit_code, started_at, duration_ms, source
              FROM commands WHERE pane_id = ?1 ORDER BY started_at DESC, id DESC LIMIT ?2"
         ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(params![pane_id, limit], map_row).map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        let rows = stmt
+            .query_map(params![pane_id, limit], map_row)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
-    pub fn search(&self, scope: HistoryScope, query: &str, limit: u32) -> Result<Vec<HistoryRecord>, String> {
+    pub fn search(
+        &self,
+        scope: HistoryScope,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<HistoryRecord>, String> {
         let q = query.trim();
         let scope_arg: Option<String> = match &scope {
             HistoryScope::Global => None,
@@ -107,16 +117,22 @@ impl HistoryDb {
                         "SELECT id, pane_id, session_id, shell, cwd, cmd, exit_code, started_at, duration_ms, source
                          FROM commands WHERE {} = ?1 ORDER BY started_at DESC, id DESC LIMIT ?2", col);
                     let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
-                    let rows = stmt.query_map(params![arg, limit], map_row).map_err(|e| e.to_string())?
-                        .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+                    let rows = stmt
+                        .query_map(params![arg, limit], map_row)
+                        .map_err(|e| e.to_string())?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| e.to_string())?;
                     (sql, rows)
                 }
                 _ => {
                     let sql = "SELECT id, pane_id, session_id, shell, cwd, cmd, exit_code, started_at, duration_ms, source
                                FROM commands ORDER BY started_at DESC, id DESC LIMIT ?1".to_string();
                     let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
-                    let rows = stmt.query_map(params![limit], map_row).map_err(|e| e.to_string())?
-                        .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+                    let rows = stmt
+                        .query_map(params![limit], map_row)
+                        .map_err(|e| e.to_string())?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| e.to_string())?;
                     (sql, rows)
                 }
             };
@@ -165,7 +181,10 @@ fn sanitize_fts(q: &str) -> String {
     // Quote each token and join with AND-implicit space. Avoids FTS5 syntax errors.
     q.split_whitespace()
         .map(|tok| {
-            let cleaned: String = tok.chars().filter(|c| c.is_alphanumeric() || *c == '/' || *c == '-' || *c == '_' || *c == '.').collect();
+            let cleaned: String = tok
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '/' || *c == '-' || *c == '_' || *c == '.')
+                .collect();
             if cleaned.is_empty() {
                 String::new()
             } else {
@@ -233,11 +252,27 @@ mod tests {
         let global = db.search(HistoryScope::Global, "git", 10).unwrap();
         assert_eq!(global.len(), 2);
 
-        let scoped = db.search(HistoryScope::Pane { pane_id: "p2".into() }, "ls", 10).unwrap();
+        let scoped = db
+            .search(
+                HistoryScope::Pane {
+                    pane_id: "p2".into(),
+                },
+                "ls",
+                10,
+            )
+            .unwrap();
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].row.cmd, "ls -la");
 
-        let cross = db.search(HistoryScope::Pane { pane_id: "p2".into() }, "git", 10).unwrap();
+        let cross = db
+            .search(
+                HistoryScope::Pane {
+                    pane_id: "p2".into(),
+                },
+                "git",
+                10,
+            )
+            .unwrap();
         assert_eq!(cross.len(), 0);
     }
 

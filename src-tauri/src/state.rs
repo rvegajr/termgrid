@@ -20,9 +20,8 @@ impl AppState {
     pub fn new() -> Self {
         let pty_manager = Arc::new(PtyManager::new());
         let shell_detector = Arc::new(SystemShellDetector::new());
-        let history = Arc::new(
-            HistoryState::new().expect("failed to open command history database"),
-        );
+        let history =
+            Arc::new(HistoryState::new().expect("failed to open command history database"));
 
         Self {
             pty_spawner: pty_manager.clone(),
