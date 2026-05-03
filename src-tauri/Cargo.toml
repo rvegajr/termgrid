@@ -1,6 +1,6 @@
 [package]
 name = "termgrid"
-version = "0.1.0"
+version = "0.1.1"
 description = "The best terminal multiplexer"
 authors = ["you"]
 edition = "2021"
