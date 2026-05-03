@@ -1,7 +1,7 @@
 {
   "name": "termgrid-app",
   "version": "0.1.0",
-  "description": "",
+  "description": "Auto-tiling cross-platform terminal with cross-device session linking via PeerJS.",
   "type": "module",
   "scripts": {
     "start": "vite",
@@ -10,7 +10,13 @@
     "serve": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "fmt:rust": "cargo fmt --all --manifest-path src-tauri/Cargo.toml",
+    "fmt:rust:check": "cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check",
+    "lint:rust": "cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings",
+    "test:rust": "cargo test --lib --manifest-path src-tauri/Cargo.toml",
+    "preflight": "pnpm typecheck && pnpm test && pnpm fmt:rust:check && pnpm lint:rust && pnpm test:rust"
   },
   "license": "MIT",
   "dependencies": {

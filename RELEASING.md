@@ -2,6 +2,52 @@
 
 The release pipeline is **automated end-to-end** once secrets are configured. You merge PRs; release-please proposes a version bump; you merge that; CI builds, signs, notarizes, and publishes.
 
+> **TL;DR for the impatient maintainer**
+>
+> 1. Land work as PRs whose **titles follow Conventional Commits** (`feat: …`, `fix: …`).
+> 2. release-please opens a `chore(main): release vX.Y.Z` PR — review, then merge it.
+> 3. Wait ~20 min for the matrix build to finish; **publish** the draft Release on GitHub.
+> 4. Done. Existing installs auto-update on next launch (once the updater is enabled).
+
+---
+
+## The four release rules
+
+These are the **only** rules you need to remember. Everything else is automated.
+
+### Rule 1 — Every commit on `main` MUST be a Conventional Commit
+
+| Prefix | Meaning | Bumps |
+|---|---|---|
+| `feat:` | new user-visible capability | **minor** |
+| `fix:` | bug fix | **patch** |
+| `perf:` | perf improvement | patch |
+| `refactor:` | internal restructure, no behavior change | patch |
+| `docs:` | docs only | none |
+| `test:` | tests only | none |
+| `chore:` / `build:` / `ci:` / `style:` | tooling / infra / formatting | none |
+| `feat!:` or any with `BREAKING CHANGE:` footer | breaking change | **major** |
+
+**Why:** `release-please` reads commit titles to decide the next version and write the changelog. Wrong prefix → wrong version → broken changelog. Squash-merge enforced on `main`, so the **PR title** is what gets recorded — title it correctly.
+
+### Rule 2 — Run `pnpm preflight` before pushing
+
+```bash
+pnpm preflight   # mirrors CI: typecheck + vitest + cargo fmt/clippy/test
+```
+
+This runs the exact gates CI runs. Catching them locally saves a 5-minute round-trip.
+
+### Rule 3 — Never push directly to `main`
+
+Branch protection blocks force-pushes and requires the 5 status checks. Even as repo owner, open a PR. Squash-merge.
+
+### Rule 4 — Don't manually edit `package.json` / `Cargo.toml` / `tauri.conf.json` versions
+
+release-please owns the version field in all three. If you bump them by hand, release-please will conflict on the next run. The version bump happens **only** through the `chore(main): release …` PR.
+
+---
+
 ## Pipeline overview
 
 ```
@@ -18,12 +64,60 @@ The release pipeline is **automated end-to-end** once secrets are configured. Yo
                                             │   • build (tauri-action) │
                                             │   • sign + notarize      │
                                             │   • upload to Release    │
-                                            │   • update latest.json   │
                                             └──────────────────────────┘
+                                                       │
+                                                       ▼
+                                            you publish the draft Release
                                                        │
                                                        ▼
                                             users auto-update on next launch
 ```
+
+---
+
+## Per-release runbook
+
+When you're ready to cut **vX.Y.Z**, go through this in order. Each line is one action.
+
+### Pre-flight
+
+- [ ] Local `main` is clean: `git status` shows nothing.
+- [ ] Local `main` is current: `git pull`.
+- [ ] CI on the latest `main` commit is green: `gh run list --workflow=ci.yml --limit 1`.
+- [ ] `pnpm preflight` passes locally.
+- [ ] Smoke-launch the app: `pnpm tauri dev` → open a pane, type a command, close, relaunch, confirm scrollback restores.
+
+### Cut
+
+- [ ] Open the release-please PR: `gh pr list --label "autorelease: pending"`.
+- [ ] Read the proposed `CHANGELOG.md` diff. Anything missing or mis-categorized? Fix the original commit messages on `main`, push, wait for release-please to refresh.
+- [ ] Merge the release-please PR (squash, default message).
+- [ ] release-please pushes tag `vX.Y.Z`.
+- [ ] `release.yml` workflow fires. Watch: `gh run watch --workflow=release.yml`.
+
+### Publish
+
+- [ ] After ~20 min, the matrix build finishes. A **draft Release** appears at https://github.com/rvegajr/termgrid/releases.
+- [ ] Inspect the artifacts (4 platforms × 1–3 bundles each).
+- [ ] Optional: edit the release notes (release-please copies the changelog).
+- [ ] Click **Publish release**.
+- [ ] If the updater is enabled, the `publish-updater-manifest` job updates `latest.json` so existing installs see the new version.
+
+### Verify
+
+- [ ] Download the artifact for your OS, install over the existing version, confirm the app still launches and your saved workspace restores.
+- [ ] If the updater is enabled, launch an older copy of the app on another machine — the update prompt should appear.
+
+### If something goes wrong
+
+| Symptom | Action |
+|---|---|
+| release-please didn't open a PR | Check that recent commits use `feat:` / `fix:` / etc. Only those types trigger a release. |
+| CI red on the release-please PR | Fix on `main` first. release-please will rebase its PR. |
+| Build matrix red on a single platform | Inspect logs: `gh run view <run-id> --log-failed`. Re-run that job: `gh run rerun --failed <run-id>`. |
+| Bad release shipped | See **Rollback** below. |
+
+---
 
 ## One-time setup
 
@@ -66,15 +160,7 @@ pnpm tauri signer generate -w ~/.tauri/termgrid.key
 
 **Keep the private key safe** — losing it means existing installs can never auto-update again.
 
-## Cutting a release
-
-1. Land your changes via PR with a Conventional Commit title.
-2. release-please opens (or updates) a `chore(main): release vX.Y.Z` PR.
-3. Review its proposed `CHANGELOG.md` and version bump.
-4. Merge it. release-please tags `vX.Y.Z` and pushes.
-5. The `Release` workflow fires, builds for all four platforms, signs, notarizes, and uploads a draft GitHub Release.
-6. Inspect the draft. Edit notes if you want. Publish.
-7. The `publish-updater-manifest` job updates `latest.json`. Existing installs see the update on next launch.
+---
 
 ## Updater manifest format
 
@@ -83,12 +169,12 @@ pnpm tauri signer generate -w ~/.tauri/termgrid.key
 ```json
 {
   "version": "0.2.0",
-  "notes": "See full changelog at https://github.com/your-org/termgrid/releases/tag/v0.2.0",
+  "notes": "See full changelog at https://github.com/rvegajr/termgrid/releases/tag/v0.2.0",
   "pub_date": "2026-05-01T12:00:00Z",
   "platforms": {
     "darwin-aarch64": {
       "signature": "<contents of .sig file from build>",
-      "url": "https://github.com/your-org/termgrid/releases/download/v0.2.0/TermGrid_0.2.0_aarch64.app.tar.gz"
+      "url": "https://github.com/rvegajr/termgrid/releases/download/v0.2.0/TermGrid_0.2.0_aarch64.app.tar.gz"
     },
     "darwin-x86_64": { "signature": "...", "url": "..." },
     "linux-x86_64":  { "signature": "...", "url": "..." },
@@ -97,7 +183,9 @@ pnpm tauri signer generate -w ~/.tauri/termgrid.key
 }
 ```
 
-Each `signature` is the contents of the `.sig` file `tauri-action` emits next to each artifact. The `publish-updater-manifest` workflow assembles this from the Release artifacts. Until you script that, you can publish manually using the `tauri-apps/tauri-action` outputs.
+Each `signature` is the contents of the `.sig` file `tauri-action` emits next to each artifact. The `publish-updater-manifest` job assembles this from the Release artifacts.
+
+---
 
 ## Hot-fix flow
 

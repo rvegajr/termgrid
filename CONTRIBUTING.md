@@ -17,15 +17,29 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
 
 ## Quality gates (matches CI exactly)
 
+One command runs everything CI runs:
+
 ```bash
-pnpm exec tsc --noEmit            # frontend typecheck
-pnpm test                         # vitest
-cargo fmt --all -- --check        # in src-tauri/
-cargo clippy --all-targets -- -D warnings
-cargo test --lib                  # in src-tauri/
+pnpm preflight
 ```
 
-Run all of these before opening a PR — CI blocks merge on any failure.
+That expands to:
+
+```bash
+pnpm typecheck       # tsc --noEmit
+pnpm test            # vitest
+pnpm fmt:rust:check  # cargo fmt --check
+pnpm lint:rust       # cargo clippy -- -D warnings
+pnpm test:rust       # cargo test --lib
+```
+
+Run `pnpm preflight` before opening a PR — CI blocks merge on any failure.
+
+Auto-fix Rust formatting:
+
+```bash
+pnpm fmt:rust
+```
 
 ## Commits & PRs
 
@@ -52,7 +66,7 @@ refactor!: rename pane.id to pane.runtimeId
 BREAKING CHANGE: PaneState.id renamed; consumers must use stableId.
 ```
 
-PR titles should also follow Conventional Commits — release-please reads merged PR titles.
+PR titles should also follow Conventional Commits — release-please reads merged PR titles. See [RELEASING.md](RELEASING.md#the-four-release-rules) for the full release rules.
 
 ## Tests
 
