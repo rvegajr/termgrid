@@ -1,0 +1,27 @@
+use crate::history::{HistoryRecord, HistoryRow, HistoryScope};
+use crate::state::AppState;
+use tauri::State;
+
+#[tauri::command]
+pub fn history_record(state: State<AppState>, row: HistoryRow) -> Result<i64, String> {
+    state.history.record(row)
+}
+
+#[tauri::command]
+pub fn history_search(
+    state: State<AppState>,
+    scope: HistoryScope,
+    query: String,
+    limit: u32,
+) -> Result<Vec<HistoryRecord>, String> {
+    state.history.search(scope, &query, limit)
+}
+
+#[tauri::command]
+pub fn history_recent(
+    state: State<AppState>,
+    pane_id: String,
+    limit: u32,
+) -> Result<Vec<HistoryRecord>, String> {
+    state.history.recent(&pane_id, limit)
+}

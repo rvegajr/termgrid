@@ -1,0 +1,45 @@
+# Node
+node_modules/
+dist/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# Vite / build
+.vite/
+*.tsbuildinfo
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/schemas/
+target/
+**/*.rs.bk
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*.swo
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.cer
+*.crt
+*.key
+secrets/
+
+# Test artifacts
+coverage/
+.nyc_output/
+
+# Local dev scratch
+tmp/
+.cache/

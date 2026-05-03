@@ -1,0 +1,82 @@
+use serde::{Deserialize, Serialize};
+use std::sync::mpsc;
+use thiserror::Error;
+
+pub type PaneId = String;
+
+/// Spawn a new PTY process — ISP: only spawn responsibility
+#[cfg_attr(test, mockall::automock)]
+pub trait PtySpawner: Send + Sync {
+    fn spawn(
+        &self,
+        pane_id: &PaneId,
+        shell: &str,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), PtyError>;
+}
+
+/// Write input to a PTY — ISP: only write responsibility
+#[cfg_attr(test, mockall::automock)]
+pub trait PtyWriter: Send + Sync {
+    fn write(&self, pane_id: &PaneId, data: &[u8]) -> Result<(), PtyError>;
+}
+
+/// Read output from a PTY — ISP: only read responsibility
+#[cfg_attr(test, mockall::automock)]
+pub trait PtyReader: Send + Sync {
+    fn subscribe(&self, pane_id: &PaneId) -> Result<mpsc::Receiver<Vec<u8>>, PtyError>;
+}
+
+/// Resize a PTY — ISP: only resize responsibility
+#[cfg_attr(test, mockall::automock)]
+pub trait PtyResizer: Send + Sync {
+    fn resize(&self, pane_id: &PaneId, cols: u16, rows: u16) -> Result<(), PtyError>;
+}
+
+/// Lifecycle management — ISP: only lifecycle responsibility
+#[cfg_attr(test, mockall::automock)]
+pub trait PtyLifecycle: Send + Sync {
+    fn kill(&self, pane_id: &PaneId) -> Result<(), PtyError>;
+    fn is_alive(&self, pane_id: &PaneId) -> bool;
+    fn list_active(&self) -> Vec<PaneId>;
+}
+
+/// Detect available shells on the system
+#[cfg_attr(test, mockall::automock)]
+pub trait ShellDetector: Send + Sync {
+    fn available_shells(&self) -> Vec<ShellInfo>;
+    fn default_shell(&self) -> ShellInfo;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellInfo {
+    pub name: String,
+    pub path: String,
+    pub kind: ShellKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ShellKind {
+    Bash,
+    Zsh,
+    Fish,
+    PowerShell,
+    Cmd,
+    Nushell,
+    GitBash,
+    Other,
+}
+
+#[derive(Debug, Error)]
+pub enum PtyError {
+    #[error("Pane not found: {0}")]
+    PaneNotFound(PaneId),
+    #[error("Pane already exists: {0}")]
+    PaneAlreadyExists(PaneId),
+    #[error("Spawn failed: {0}")]
+    SpawnFailed(String),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+}

@@ -1,0 +1,9 @@
+# Default: every file requires review by the listed owners.
+# Replace @your-handle with the actual GitHub user(s) / team(s).
+
+* @rvegajr
+
+# Areas with stricter review (uncomment + customize as the team grows):
+# /src-tauri/                @rvegajr
+# /.github/                  @rvegajr
+# /src/services/relay.js     @rvegajr
