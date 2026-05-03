@@ -16,6 +16,12 @@ pub struct PtyManager {
     handles: Arc<Mutex<HashMap<PaneId, PtyHandle>>>,
 }
 
+impl Default for PtyManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PtyManager {
     pub fn new() -> Self {
         Self {
@@ -137,7 +143,7 @@ impl PtyResizer for PtyManager {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|e| PtyError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .map_err(|e| PtyError::Io(std::io::Error::other(e)))?;
         Ok(())
     }
 }

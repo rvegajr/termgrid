@@ -16,6 +16,12 @@ pub struct AppState {
     pub history: Arc<HistoryState>,
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AppState {
     pub fn new() -> Self {
         let pty_manager = Arc::new(PtyManager::new());

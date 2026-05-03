@@ -4,6 +4,12 @@ use std::path::{Path, PathBuf};
 
 pub struct SystemShellDetector;
 
+impl Default for SystemShellDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SystemShellDetector {
     pub fn new() -> Self {
         Self
