@@ -147,32 +147,50 @@ Without it, SmartScreen warns "unrecognized publisher" for ~weeks until reputati
 | `WINDOWS_CERTIFICATE` | base64 of the `.pfx` |
 | `WINDOWS_CERTIFICATE_PASSWORD` | the password |
 
-### 3. Tauri updater signing key (required to enable auto-update)
+### 3. Tauri auto-updater (one-time setup, ~10 min)
+
+The updater is **completely removed from the v0.1.x source** to keep release builds clean. You add it back along with the signing key:
 
 ```bash
+# 1. Generate the keypair
 pnpm tauri signer generate -w ~/.tauri/termgrid.key
-# Save private key (file contents) → GitHub Secret TAURI_SIGNING_PRIVATE_KEY
-# Save the password (if you set one)  → TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-# Paste the public key into src-tauri/tauri.conf.json → plugins.updater.pubkey
-# Flip plugins.updater.active to true
-# Flip bundle.createUpdaterArtifacts to true (currently false — see below)
-# Update plugins.updater.endpoints to your repo URL
+
+# 2. Add the secrets to GitHub
+#    TAURI_SIGNING_PRIVATE_KEY               ← contents of the private key file
+#    TAURI_SIGNING_PRIVATE_KEY_PASSWORD      ← the password if you set one
+
+# 3. Re-add the Rust deps
+cd src-tauri
+cargo add tauri-plugin-updater tauri-plugin-process
+
+# 4. Re-add the JS deps
+cd ..
+pnpm add @tauri-apps/plugin-updater @tauri-apps/plugin-process
+
+# 5. In src-tauri/src/lib.rs, register the plugins inside Builder::default():
+#       .plugin(tauri_plugin_updater::Builder::new().build())
+#       .plugin(tauri_plugin_process::init())
+
+# 6. In src-tauri/capabilities/default.json, add to permissions:
+#       "updater:default",
+#       "process:default"
+
+# 7. In src-tauri/tauri.conf.json, add the plugin block + flip the bundle flag:
+#       "bundle": { ..., "createUpdaterArtifacts": true },
+#       "plugins": {
+#         "updater": {
+#           "active": true,
+#           "endpoints": ["https://github.com/rvegajr/termgrid/releases/latest/download/latest.json"],
+#           "pubkey": "<paste the generated public key here>",
+#           "dialog": true
+#         }
+#       }
+
+# 8. Restore src/services/updater.ts (see git log for the original version)
+#    or write fresh against tauri-plugin-updater's API.
 ```
 
-**Why `tauri.conf.json` has no `plugins.updater` block today:** even with `createUpdaterArtifacts: false`, the mere presence of a `plugins.updater.pubkey` makes tauri-bundler try to sign every artifact. Until you have a real key, leave the whole block out. To re-enable, add this to `tauri.conf.json`:
-
-```json
-"plugins": {
-  "updater": {
-    "active": true,
-    "endpoints": ["https://github.com/rvegajr/termgrid/releases/latest/download/latest.json"],
-    "pubkey": "<your generated pubkey>",
-    "dialog": true
-  }
-}
-```
-
-…and set `bundle.createUpdaterArtifacts: true` in the same file.
+**Why we ripped it out:** tauri-bundler treats *any* configured `plugins.updater.pubkey` (even a placeholder) as "signing required for every artifact." With no `TAURI_SIGNING_PRIVATE_KEY`, the build runs to completion and produces every platform bundle, then dies at the signing step. Removing the plugin entirely until you have a real key keeps `pnpm tauri build` and the release pipeline green.
 
 **Keep the private key safe** — losing it means existing installs can never auto-update again.
 
