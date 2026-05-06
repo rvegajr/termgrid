@@ -73,24 +73,42 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Build, sign, notarize, upload to Release
-        uses: tauri-apps/tauri-action@v0
+      # Conditionally inject signing/notarization env vars only when their
+      # secrets are non-empty. Empty secrets become empty env vars, which
+      # tauri-action interprets as "signing requested" → import fails. See
+      # RELEASING.md for the full secret list and how to populate them.
+      - name: Configure signing env (only if secrets present)
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS code signing — set these in repo Secrets to enable signing.
-          # If unset, the workflow still produces unsigned artifacts (Gatekeeper will warn users).
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Windows Authenticode — set to enable signing on Windows.
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          # Tauri updater signing key — required if you enable the updater plugin.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -e
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            val="${!v}"
+            if [ -n "$val" ]; then
+              # Multi-line safe write to GITHUB_ENV
+              {
+                echo "${v}<<TG_EOF"
+                printf '%s\n' "$val"
+                echo "TG_EOF"
+              } >> "$GITHUB_ENV"
+              echo "set $v"
+            fi
+          done
+
+      - name: Build, sign, notarize, upload to Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "TermGrid ${{ github.event.inputs.tag || github.ref_name }}"
