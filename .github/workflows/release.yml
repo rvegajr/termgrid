@@ -73,37 +73,11 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Conditionally inject signing/notarization env vars only when their
-      # secrets are non-empty. Empty secrets become empty env vars, which
-      # tauri-action interprets as "signing requested" → import fails. See
-      # RELEASING.md for the full secret list and how to populate them.
-      - name: Configure signing env (only if secrets present)
+      - name: Debug — show TAURI_* / SIGN* env on runner
         shell: bash
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          set -e
-          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
-            val="${!v}"
-            if [ -n "$val" ]; then
-              # Multi-line safe write to GITHUB_ENV
-              {
-                echo "${v}<<TG_EOF"
-                printf '%s\n' "$val"
-                echo "TG_EOF"
-              } >> "$GITHUB_ENV"
-              echo "set $v"
-            fi
-          done
+          echo "Pre-build env scan:"
+          env | grep -iE 'tauri|sign|apple|windows_cert' || echo "(none)"
 
       - name: Tauri build (direct)
         shell: bash
