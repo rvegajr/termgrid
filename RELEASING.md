@@ -221,6 +221,15 @@ Each `signature` is the contents of the `.sig` file `tauri-action` emits next to
 
 ---
 
+## Tags are immutable — bump the version, don't move the tag
+
+Once a tag is pushed, **never force-move it**. The release.yml workflow's `actions/checkout` resolves to the tag's commit, not `main`. If you fix something on `main` after tagging, those fixes won't be in the next build that uses the tag.
+
+If a release fails partway through and needs a code fix:
+
+- **If the tag has any published artifacts** (anyone could have downloaded it): bump the patch version. Land the fix as a `fix:` commit on `main`, let release-please open `vX.Y.Z+1`, merge it, build again.
+- **If the tag has zero published artifacts** (initial bring-up only): you can delete + re-create the tag at HEAD with `git tag -d / git push origin :refs/tags/X / git tag X HEAD / git push origin X`. Don't make this a habit.
+
 ## Hot-fix flow
 
 1. Branch from the release tag: `git checkout -b hotfix/v0.2.1 v0.2.0`
