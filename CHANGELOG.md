@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2](https://github.com/rvegajr/termgrid/compare/v0.1.1...v0.1.2) (2026-05-06)
+
+
+### Features
+
+* workspace restore, deep-link OS integrations, larger grids ([acc7d66](https://github.com/rvegajr/termgrid/commit/acc7d66e047d40dd2cee619fa2d8037feec9176f))
+
+
+### Docs
+
+* warn against force-moving release tags; explain when it's tolerable ([94934a2](https://github.com/rvegajr/termgrid/commit/94934a236fdd470e88939c015ef04a341ac303de))
+
 ## [0.1.1](https://github.com/rvegajr/termgrid/compare/v0.1.0...v0.1.1) (2026-05-03)
 
 
