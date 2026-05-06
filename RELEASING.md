@@ -155,8 +155,11 @@ pnpm tauri signer generate -w ~/.tauri/termgrid.key
 # Save the password (if you set one)  → TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 # Paste the public key into src-tauri/tauri.conf.json → plugins.updater.pubkey
 # Flip plugins.updater.active to true
+# Flip bundle.createUpdaterArtifacts to true (currently false — see below)
 # Update plugins.updater.endpoints to your repo URL
 ```
+
+**Why `createUpdaterArtifacts` defaults to `false`:** when `true`, every release build attempts to sign the bundles with `TAURI_SIGNING_PRIVATE_KEY`. If the secret is unset, the entire build fails after producing the `.dmg` / `.deb` / `.msi`. We keep it `false` until you actually have the key. Once enabled, the build emits `*.sig` files alongside each artifact that the updater verifies.
 
 **Keep the private key safe** — losing it means existing installs can never auto-update again.
 
