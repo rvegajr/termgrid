@@ -1,0 +1,11 @@
+Windows Registry Editor Version 5.00
+
+; TermGrid Explorer integration — uninstall.
+; Removes every key created by install-explorer-menu.reg.
+
+[-HKEY_CLASSES_ROOT\Directory\shell\TermGridUnused]
+[-HKEY_CLASSES_ROOT\Directory\shell\TermGridExisting]
+[-HKEY_CLASSES_ROOT\Directory\shell\TermGridNewTab]
+[-HKEY_CLASSES_ROOT\Directory\Background\shell\TermGridUnused]
+[-HKEY_CLASSES_ROOT\Directory\Background\shell\TermGridExisting]
+[-HKEY_CLASSES_ROOT\Directory\Background\shell\TermGridNewTab]

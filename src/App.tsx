@@ -1,4 +1,4 @@
-import { createSignal, createMemo, onMount, For, createEffect, Show } from "solid-js";
+import { createSignal, createMemo, onMount, For, createEffect, Show, batch } from "solid-js";
 import "@xterm/xterm/css/xterm.css";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -30,8 +30,15 @@ import {
   loadWorkspace,
   saveWorkspace,
   newStableId,
+  hasSavedWorkspace,
+  describeSavedWorkspace,
   type Workspace,
 } from "./services/workspace";
+import {
+  installDeepLinkHandler,
+  onOpenRequest,
+  type OpenRequest,
+} from "./services/deep-link";
 import {
   attachSnapshot,
   restoreSnapshot,
@@ -72,11 +79,98 @@ function App() {
   const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
   const [shells, setShells] = createSignal<ipc.ShellInfo[]>([]);
   const [defaultShellInfo, setDefaultShellInfo] = createSignal<ipc.ShellInfo | null>(null);
-  const [layoutPreset, setLayoutPreset] = createSignal<LayoutPreset>("auto");
+  // Per-tab layout preset. The TitleBar shows the active tab's preset and
+  // changing it only affects that tab. New tabs default to "auto".
+  const [tabLayouts, setTabLayouts] = createSignal<Record<string, LayoutPreset>>({});
+  const layoutPreset = (): LayoutPreset => {
+    const t = activeTabId();
+    return (t && tabLayouts()[t]) || "auto";
+  };
+  /** Send `cd <path>\n` to a pane, with shell-safe single-quote escaping. */
+  function cdPaneTo(backendId: string, path: string) {
+    const escaped = path.replace(/'/g, `'\\''`);
+    ipc.writePane(backendId, `cd '${escaped}'\n`);
+  }
+
+  /** Handle `termgrid://open?path=...&mode=...` requests from the OS. */
+  async function handleOpenRequest(req: OpenRequest) {
+    if (req.mode === "new-tab") {
+      const pane = await createPaneState();
+      const tabId = `tab-${nextTabId++}`;
+      const tab: TabState = {
+        id: tabId,
+        name: pathBaseName(req.path) || `Tab ${tabs().length + 1}`,
+        paneIds: [pane.id],
+      };
+      batch(() => {
+        setPanes(prev => [...prev, pane]);
+        setTabs(prev => [...prev, tab]);
+        setActiveTabId(tabId);
+      });
+      // Wait for the shell to print its first prompt before sending cd.
+      setTimeout(() => cdPaneTo(pane.backendId, req.path), 600);
+      return;
+    }
+
+    if (req.mode === "existing") {
+      const fid = focusedPaneId();
+      const pane = (fid && panes().find(p => p.id === fid)) || getActivePanes()[0];
+      if (pane) {
+        cdPaneTo(pane.backendId, req.path);
+      } else {
+        // No pane yet (welcome screen) — fall through to spawn one.
+        await addPaneToActiveTab();
+        const last = panes()[panes().length - 1];
+        if (last) setTimeout(() => cdPaneTo(last.backendId, req.path), 600);
+      }
+      return;
+    }
+
+    // mode: "unused" — pick an empty/idle pane in the active tab if any,
+    // otherwise spawn a new pane in the active tab.
+    if (req.mode === "unused") {
+      if (!activeTabId()) {
+        // No tabs — make one.
+        await addPaneToNewTab();
+      } else {
+        await addPaneToActiveTab();
+      }
+      const last = panes()[panes().length - 1];
+      if (last) setTimeout(() => cdPaneTo(last.backendId, req.path), 600);
+    }
+  }
+
+  function pathBaseName(p: string): string {
+    const trimmed = p.replace(/[/\\]+$/, "");
+    const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+    return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
+  }
+
+  function formatRelativeTime(ts: number): string {
+    const diff = Date.now() - ts;
+    if (diff < 60_000) return "just now";
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} min ago`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} hr ago`;
+    return `${Math.floor(diff / 86_400_000)} day${Math.floor(diff / 86_400_000) === 1 ? "" : "s"} ago`;
+  }
+
+  function setLayoutPreset(preset: LayoutPreset) {
+    const t = activeTabId();
+    if (!t) return;
+    setTabLayouts((prev) => ({ ...prev, [t]: preset }));
+    // Manual layout change resets the active tab's edge overrides — matches
+    // the prior single-layout behavior. Tab-switching does NOT reset.
+    resetAllOffsets();
+  }
   const [edgeOffsets, setEdgeOffsets] = createSignal<Record<string, EdgeOffsets>>({});
   const [showAddMenu, setShowAddMenu] = createSignal(false);
   const [focusedPaneId, setFocusedPaneId] = createSignal<string | null>(null);
   const [showHistory, setShowHistory] = createSignal(false);
+  // Gate the persist effect — true only after the initial hydrate completes
+  // (or after the welcome screen lands the first pane). Without this, the
+  // first effect run fires against empty signals and clobbers the saved
+  // workspace before hydrate finishes its async pane spawns.
+  const [hydrated, setHydrated] = createSignal(false);
   let tilingRef: HTMLDivElement | undefined;
 
   function updateOffsets(id: string, next: EdgeOffsets) {
@@ -89,7 +183,17 @@ function App() {
     }));
   }
   function resetAllOffsets() {
-    setEdgeOffsets({});
+    // Only reset the active tab's panes — leave other tabs' overrides intact.
+    const activePaneIds = new Set(getActivePanes().map((p) => p.id));
+    if (activePaneIds.size === 0) {
+      setEdgeOffsets({});
+      return;
+    }
+    setEdgeOffsets((prev) => {
+      const next = { ...prev };
+      for (const id of activePaneIds) delete next[id];
+      return next;
+    });
   }
 
   onMount(async () => {
@@ -116,11 +220,14 @@ function App() {
       }
     });
 
-    // Hydrate from saved workspace if one exists; otherwise show start screen.
-    const ws = loadWorkspace();
-    if (ws.tabs.length > 0) {
-      await hydrateWorkspace(ws);
-    }
+    // Always show the welcome screen on launch — the user explicitly chooses
+    // whether to restore a previous session or start fresh. Avoids the
+    // surprise of auto-spawning shells the user didn't ask for.
+    setHydrated(true);
+
+    // Wire up `termgrid://` deep-links from Finder / Explorer / Nautilus.
+    onOpenRequest(handleOpenRequest);
+    await installDeepLinkHandler();
 
     // Keybindings
     document.addEventListener("keydown", handleKeyDown);
@@ -230,9 +337,13 @@ function App() {
   }
 
   async function hydrateWorkspace(ws: Workspace) {
-    if (ws.layoutPreset) setLayoutPreset(ws.layoutPreset as LayoutPreset);
     const newTabs: TabState[] = [];
     const newPanes: PaneState[] = [];
+    const newTabLayouts: Record<string, LayoutPreset> = {};
+    // Map saved edge offsets (keyed by stableId) → freshly-spawned pane.id.
+    const newEdgeOffsets: Record<string, EdgeOffsets> = {};
+    const fallbackLayout = (ws.defaultLayoutPreset || "auto") as LayoutPreset;
+
     for (const t of ws.tabs) {
       const tabPanes: string[] = [];
       for (const sid of t.paneStableIds) {
@@ -240,24 +351,33 @@ function App() {
         const pane = await createPaneState(meta?.shellType, { stableId: sid });
         newPanes.push(pane);
         tabPanes.push(pane.id);
+        // Translate persisted edge offsets stableId → runtime pane.id.
+        const savedOffsets = ws.edgeOffsets?.[sid];
+        if (savedOffsets) newEdgeOffsets[pane.id] = savedOffsets;
       }
       if (tabPanes.length === 0) {
-        // empty tab — give it one fresh pane
         const pane = await createPaneState();
         newPanes.push(pane);
         tabPanes.push(pane.id);
       }
       newTabs.push({ id: t.id, name: t.name, paneIds: tabPanes });
+      newTabLayouts[t.id] = ((t.layoutPreset as LayoutPreset) ?? fallbackLayout);
       if (parseInt(t.id.replace(/\D/g, ""), 10) >= nextTabId) {
         nextTabId = parseInt(t.id.replace(/\D/g, ""), 10) + 1;
       }
     }
-    setPanes(newPanes);
-    setTabs(newTabs);
     const wantedActive = ws.activeTabId && newTabs.some((t) => t.id === ws.activeTabId)
       ? ws.activeTabId
       : newTabs[0]?.id ?? null;
-    setActiveTabId(wantedActive);
+    // Batch all signal writes so the persist effect sees the final state once,
+    // not the intermediate stages where (e.g.) tabs is set but tabLayouts isn't.
+    batch(() => {
+      setPanes(newPanes);
+      setTabs(newTabs);
+      setTabLayouts(newTabLayouts);
+      setEdgeOffsets(newEdgeOffsets);
+      setActiveTabId(wantedActive);
+    });
   }
 
   async function addPaneToNewTab(shell?: string) {
@@ -285,23 +405,28 @@ function App() {
     );
   }
 
-  async function addFourCornerLayout() {
-    // Create a new tab with 4 panes in grid layout
-    const pane1 = await createPaneState();
-    const pane2 = await createPaneState();
-    const pane3 = await createPaneState();
-    const pane4 = await createPaneState();
+  async function addGridTab(paneCount: number, preset: LayoutPreset, label: string) {
+    const newPanes: PaneState[] = [];
+    for (let i = 0; i < paneCount; i++) {
+      newPanes.push(await createPaneState());
+    }
     const tabId = `tab-${nextTabId++}`;
     const tab: TabState = {
       id: tabId,
-      name: `Grid ${tabs().length + 1}`,
-      paneIds: [pane1.id, pane2.id, pane3.id, pane4.id],
+      name: `${label} ${tabs().length + 1}`,
+      paneIds: newPanes.map((p) => p.id),
     };
-    setPanes(prev => [...prev, pane1, pane2, pane3, pane4]);
-    setTabs(prev => [...prev, tab]);
-    setActiveTabId(tabId);
-    setLayoutPreset("grid");
+    batch(() => {
+      setPanes(prev => [...prev, ...newPanes]);
+      setTabs(prev => [...prev, tab]);
+      setActiveTabId(tabId);
+      setTabLayouts(prev => ({ ...prev, [tabId]: preset }));
+    });
   }
+
+  const addFourCornerLayout = () => addGridTab(4, "grid", "Grid");
+  const addSixPaneGrid     = () => addGridTab(6, "grid-3x2", "3×2");
+  const addEightPaneGrid   = () => addGridTab(8, "grid-4x2", "4×2");
 
   async function closeActivePane() {
     const tabId = activeTabId();
@@ -417,12 +542,6 @@ function App() {
     }, 50);
   });
 
-  // Snap back when layout preset changes
-  createEffect(() => {
-    layoutPreset();
-    resetAllOffsets();
-  });
-
   // Keep session-manager pane count in sync
   createEffect(() => {
     updateLocalSession({ paneCount: getActivePanes().length });
@@ -430,8 +549,28 @@ function App() {
 
   // Persist workspace whenever its shape changes (debounced inside saveWorkspace)
   createEffect(() => {
+    // Track every dependency BEFORE the gate so subsequent changes still
+    // trigger this effect once persistence is enabled.
     const ts = tabs();
     const ps = panes();
+    const layouts = tabLayouts();
+    const offsets = edgeOffsets();
+    const active = activeTabId();
+    if (!hydrated()) return;
+    // If we're on the welcome screen (no tabs yet), do NOT save — that would
+    // wipe the existing saved workspace before the user has a chance to
+    // click "Restore last session". Only save when real content exists.
+    if (ts.length === 0) return;
+    void active;
+    // Translate edge offsets from runtime pane.id keys → stableId keys.
+    const offsetsByStable: Record<string, EdgeOffsets> = {};
+    for (const [runtimeId, eo] of Object.entries(offsets)) {
+      const pane = ps.find((p) => p.id === runtimeId);
+      if (!pane) continue;
+      // Skip zero-overrides to keep storage clean.
+      if (eo.left === 0 && eo.top === 0 && eo.right === 0 && eo.bottom === 0) continue;
+      offsetsByStable[pane.stableId] = eo;
+    }
     const ws: Workspace = {
       tabs: ts.map((t) => ({
         id: t.id,
@@ -439,12 +578,14 @@ function App() {
         paneStableIds: t.paneIds
           .map((pid) => ps.find((p) => p.id === pid)?.stableId)
           .filter((x): x is string => !!x),
+        layoutPreset: layouts[t.id] ?? "auto",
       })),
       activeTabId: activeTabId(),
       panes: Object.fromEntries(
         ps.map((p) => [p.stableId, { stableId: p.stableId, shellType: p.shellType }]),
       ),
-      layoutPreset: layoutPreset(),
+      edgeOffsets: offsetsByStable,
+      defaultLayoutPreset: "auto",
     };
     saveWorkspace(ws);
   });
@@ -536,10 +677,24 @@ function App() {
               </button>
               <button
                 class="add-menu-item"
-                title="Add enough panes to fill a 2×2 grid in the current tab"
+                title="New tab with 4 panes in a 2×2 grid"
                 onClick={() => { addFourCornerLayout(); setShowAddMenu(false); }}
               >
-                <span class="add-icon">&#9638;&#9638;</span> 4-Corner Layout
+                <span class="add-icon">▦</span> 4-Pane Grid (2×2)
+              </button>
+              <button
+                class="add-menu-item"
+                title="New tab with 6 panes in a 3×2 grid"
+                onClick={() => { addSixPaneGrid(); setShowAddMenu(false); }}
+              >
+                <span class="add-icon">⊞</span> 6-Pane Grid (3×2)
+              </button>
+              <button
+                class="add-menu-item"
+                title="New tab with 8 panes in a 4×2 grid"
+                onClick={() => { addEightPaneGrid(); setShowAddMenu(false); }}
+              >
+                <span class="add-icon">⊟</span> 8-Pane Grid (4×2)
               </button>
             </div>
           )}
@@ -581,6 +736,31 @@ function App() {
               <div class="welcome-logo">▦</div>
               <div class="welcome-title">TermGrid</div>
               <div class="welcome-sub">Start a session to begin.</div>
+
+              <Show when={hasSavedWorkspace()}>
+                {(() => {
+                  const info = describeSavedWorkspace();
+                  const ago = info.savedAt
+                    ? formatRelativeTime(info.savedAt)
+                    : "earlier";
+                  return (
+                    <button
+                      class="welcome-restore-btn"
+                      onClick={() => hydrateWorkspace(loadWorkspace())}
+                      title="Reopen the tabs and panes you had at the last close. Scrollback comes back; live shells start fresh."
+                    >
+                      <span class="restore-icon">↻</span>
+                      <span class="restore-main">
+                        <span class="restore-title">Restore last session</span>
+                        <span class="restore-meta">
+                          {info.tabCount} tab{info.tabCount === 1 ? "" : "s"} · {info.paneCount} pane{info.paneCount === 1 ? "" : "s"} · {ago}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })()}
+                <div class="welcome-divider"><span>or start fresh</span></div>
+              </Show>
 
               <div class="welcome-shells">
                 {(() => {

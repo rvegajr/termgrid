@@ -6,6 +6,8 @@ export type LayoutPreset =
   | 'columns'
   | 'rows'
   | 'grid'
+  | 'grid-3x2'
+  | 'grid-4x2'
   | 'main-right'
   | 'main-left';
 
@@ -15,9 +17,23 @@ export const LAYOUT_PRESETS: { id: LayoutPreset; label: string; icon: string; he
   { id: 'columns', label: 'Columns', icon: '▌▌', help: 'Equal-width vertical columns, one per pane.' },
   { id: 'rows', label: 'Rows', icon: '☰', help: 'Equal-height horizontal rows, one per pane.' },
   { id: 'grid', label: 'Grid', icon: '▦', help: 'Uniform grid layout (cols = ⌈√n⌉).' },
+  { id: 'grid-3x2', label: '3×2', icon: '⊞', help: '3 columns × 2 rows — sized for 6 panes.' },
+  { id: 'grid-4x2', label: '4×2', icon: '⊟', help: '4 columns × 2 rows — sized for 8 panes.' },
   { id: 'main-left', label: 'Main-L', icon: '◧', help: 'Big main pane on the left, others stacked on the right.' },
   { id: 'main-right', label: 'Main-R', icon: '◨', help: 'Big main pane on the right, others stacked on the left.' },
 ];
+
+function fixedGrid(cols: number, rows: number, paneCount: number): PaneLayout[] {
+  const cw = 100 / cols;
+  const rh = 100 / rows;
+  const out: PaneLayout[] = [];
+  for (let i = 0; i < paneCount; i++) {
+    const r = Math.floor(i / cols);
+    const c = i % cols;
+    out.push({ paneId: String(i), x: c * cw, y: r * rh, width: cw, height: rh });
+  }
+  return out;
+}
 
 export function calculateLayoutPreset(
   preset: LayoutPreset,
@@ -61,6 +77,9 @@ export function calculateLayoutPreset(
     }
     return layouts;
   }
+
+  if (preset === 'grid-3x2') return fixedGrid(3, 2, paneCount);
+  if (preset === 'grid-4x2') return fixedGrid(4, 2, paneCount);
 
   if (preset === 'main-left' || preset === 'main-right') {
     if (paneCount === 1)

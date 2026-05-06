@@ -43,3 +43,4 @@ coverage/
 # Local dev scratch
 tmp/
 .cache/
+integrations/macos/build/

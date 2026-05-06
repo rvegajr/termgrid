@@ -1,0 +1,56 @@
+Windows Registry Editor Version 5.00
+
+; TermGrid Explorer integration — adds three "Open in TermGrid" entries
+; to the right-click menu when right-clicking a folder OR the empty area
+; inside a folder. Uses the `termgrid://` URI scheme registered by the app.
+;
+; Install: double-click this file. Uninstall: see uninstall-explorer-menu.reg.
+;
+; HKCR\Directory\shell    = right-click ON a folder
+; HKCR\Directory\Background\shell = right-click in EMPTY space inside a folder
+
+; ---- Right-click on a folder ----------------------------------------------
+
+[HKEY_CLASSES_ROOT\Directory\shell\TermGridUnused]
+@="Open in TermGrid (Unused Pane)"
+"Icon"="\"%LOCALAPPDATA%\\Programs\\TermGrid\\TermGrid.exe\""
+
+[HKEY_CLASSES_ROOT\Directory\shell\TermGridUnused\command]
+@="cmd.exe /c start \"\" \"termgrid://open?path=%1&mode=unused\""
+
+[HKEY_CLASSES_ROOT\Directory\shell\TermGridExisting]
+@="Open in TermGrid (Existing Pane)"
+"Icon"="\"%LOCALAPPDATA%\\Programs\\TermGrid\\TermGrid.exe\""
+
+[HKEY_CLASSES_ROOT\Directory\shell\TermGridExisting\command]
+@="cmd.exe /c start \"\" \"termgrid://open?path=%1&mode=existing\""
+
+[HKEY_CLASSES_ROOT\Directory\shell\TermGridNewTab]
+@="Open in TermGrid (New Tab)"
+"Icon"="\"%LOCALAPPDATA%\\Programs\\TermGrid\\TermGrid.exe\""
+
+[HKEY_CLASSES_ROOT\Directory\shell\TermGridNewTab\command]
+@="cmd.exe /c start \"\" \"termgrid://open?path=%1&mode=new-tab\""
+
+; ---- Right-click in empty area inside a folder ----------------------------
+
+[HKEY_CLASSES_ROOT\Directory\Background\shell\TermGridUnused]
+@="Open in TermGrid (Unused Pane)"
+"Icon"="\"%LOCALAPPDATA%\\Programs\\TermGrid\\TermGrid.exe\""
+
+[HKEY_CLASSES_ROOT\Directory\Background\shell\TermGridUnused\command]
+@="cmd.exe /c start \"\" \"termgrid://open?path=%V&mode=unused\""
+
+[HKEY_CLASSES_ROOT\Directory\Background\shell\TermGridExisting]
+@="Open in TermGrid (Existing Pane)"
+"Icon"="\"%LOCALAPPDATA%\\Programs\\TermGrid\\TermGrid.exe\""
+
+[HKEY_CLASSES_ROOT\Directory\Background\shell\TermGridExisting\command]
+@="cmd.exe /c start \"\" \"termgrid://open?path=%V&mode=existing\""
+
+[HKEY_CLASSES_ROOT\Directory\Background\shell\TermGridNewTab]
+@="Open in TermGrid (New Tab)"
+"Icon"="\"%LOCALAPPDATA%\\Programs\\TermGrid\\TermGrid.exe\""
+
+[HKEY_CLASSES_ROOT\Directory\Background\shell\TermGridNewTab\command]
+@="cmd.exe /c start \"\" \"termgrid://open?path=%V&mode=new-tab\""

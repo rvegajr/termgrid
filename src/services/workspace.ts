@@ -5,7 +5,9 @@
  * (see pane-snapshot.ts) into a freshly-spawned shell.
  */
 
-const KEY = "termgrid.workspace.v1";
+// Bumped to v2: layoutPreset moved per-tab; added edgeOffsets keyed by stableId.
+// v1 entries silently fall through to EMPTY (welcome screen on first launch).
+const KEY = "termgrid.workspace.v2";
 
 export interface PersistedPane {
   stableId: string;
@@ -17,21 +19,48 @@ export interface PersistedTab {
   id: string;
   name: string;
   paneStableIds: string[];
+  layoutPreset?: string;
+}
+
+export interface PersistedEdgeOffsets {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
 }
 
 export interface Workspace {
   tabs: PersistedTab[];
   activeTabId: string | null;
   panes: Record<string, PersistedPane>;
-  layoutPreset: string;
+  /** Per-pane resize-edge overrides, keyed by stableId so they survive PTY rotation. */
+  edgeOffsets: Record<string, PersistedEdgeOffsets>;
+  /** Fallback for tabs that don't carry their own layoutPreset (back-compat). */
+  defaultLayoutPreset: string;
+  /** Epoch ms of the last save — used to render a "last used" hint on the welcome screen. */
+  savedAt?: number;
 }
 
 const EMPTY: Workspace = {
   tabs: [],
   activeTabId: null,
   panes: {},
-  layoutPreset: "auto",
+  edgeOffsets: {},
+  defaultLayoutPreset: "auto",
 };
+
+/** True if a real saved workspace exists (≥1 tab with ≥1 pane). */
+export function hasSavedWorkspace(): boolean {
+  const ws = loadWorkspace();
+  return ws.tabs.length > 0 && ws.tabs.some((t) => t.paneStableIds.length > 0);
+}
+
+/** Quick summary for the welcome screen restore button. */
+export function describeSavedWorkspace(): { tabCount: number; paneCount: number; savedAt?: number } {
+  const ws = loadWorkspace();
+  const paneCount = ws.tabs.reduce((sum, t) => sum + t.paneStableIds.length, 0);
+  return { tabCount: ws.tabs.length, paneCount, savedAt: ws.savedAt };
+}
 
 export function loadWorkspace(): Workspace {
   try {
@@ -53,7 +82,8 @@ export function saveWorkspace(ws: Workspace) {
   saveTimer = window.setTimeout(() => {
     saveTimer = null;
     try {
-      localStorage.setItem(KEY, JSON.stringify(ws));
+      const stamped: Workspace = { ...ws, savedAt: Date.now() };
+      localStorage.setItem(KEY, JSON.stringify(stamped));
     } catch {}
   }, 250);
 }

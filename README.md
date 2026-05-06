@@ -85,6 +85,15 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
 
 Detailed product spec: [SPEC.md](SPEC.md).
 
+## File-manager integrations
+
+Right-click any folder in Finder, Explorer, or Nautilus to open it directly in TermGrid. Three modes:
+- **Existing pane** — `cd` the focused pane to that path
+- **Unused pane** — spawn a fresh pane in the active tab at that path
+- **New tab** — open a brand-new tab named after the folder
+
+Setup: see [integrations/](integrations/) — one short script or `.reg` per OS.
+
 ## For contributors
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) — local setup, quality gates, commit convention, areas-to-know.

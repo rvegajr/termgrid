@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Action
+Name=Open in TermGrid (Unused Pane)
+Icon=terminal
+Profiles=unused;existing;newtab;
+
+[X-Action-Profile unused]
+Name=Open in TermGrid (Unused Pane)
+Exec=xdg-open termgrid://open?path=%f&mode=unused
+
+[X-Action-Profile existing]
+Name=Open in TermGrid (Existing Pane)
+Exec=xdg-open termgrid://open?path=%f&mode=existing
+
+[X-Action-Profile newtab]
+Name=Open in TermGrid (New Tab)
+Exec=xdg-open termgrid://open?path=%f&mode=new-tab
