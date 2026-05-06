@@ -105,18 +105,60 @@ jobs:
             fi
           done
 
-      - name: Build, sign, notarize, upload to Release
-        uses: tauri-apps/tauri-action@v0
+      - name: Tauri build (direct)
+        shell: bash
+        run: pnpm tauri build ${{ matrix.args }}
+
+      - name: Ensure GitHub Release exists
+        id: release
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: "TermGrid ${{ github.event.inputs.tag || github.ref_name }}"
-          releaseBody: |
-            See the auto-generated changelog below. Built artifacts attached.
-          releaseDraft: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          args: ${{ matrix.args }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -e
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "TermGrid $TAG" \
+              --notes "Built artifacts attached. See CHANGELOG.md for details." \
+              --draft
+          fi
+
+      - name: Upload bundles to Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -e
+          shopt -s nullglob globstar
+          base="src-tauri/target"
+          # Possible bundle dirs across platforms + targets
+          patterns=(
+            "$base/release/bundle/deb/"*.deb
+            "$base/release/bundle/rpm/"*.rpm
+            "$base/release/bundle/appimage/"*.AppImage
+            "$base/release/bundle/msi/"*.msi
+            "$base/release/bundle/nsis/"*.exe
+            "$base/"*"/release/bundle/dmg/"*.dmg
+            "$base/"*"/release/bundle/macos/"*.app.tar.gz
+          )
+          uploaded=0
+          for f in "${patterns[@]}"; do
+            if [ -f "$f" ]; then
+              echo "↑ uploading $f"
+              gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY" --clobber
+              uploaded=$((uploaded+1))
+            fi
+          done
+          if [ "$uploaded" -eq 0 ]; then
+            echo "::warning::no artifacts found to upload — bundle paths may have changed"
+            ls -R "$base/release/bundle" || true
+            ls -R "$base"/*/release/bundle 2>/dev/null || true
+          else
+            echo "uploaded $uploaded artifact(s)"
+          fi
 
   publish-updater-manifest:
     name: Publish updater manifest
