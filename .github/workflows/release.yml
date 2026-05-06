@@ -106,7 +106,7 @@ jobs:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -e
-          shopt -s nullglob globstar
+          shopt -s nullglob
           base="src-tauri/target"
           # Possible bundle dirs across platforms + targets
           patterns=(
