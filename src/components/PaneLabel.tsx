@@ -1,6 +1,8 @@
-import { Show } from "solid-js";
+import { Show, createSignal } from "solid-js";
 import { paneMetaMap } from "../services/pane-meta";
 import { HelpTip } from "./HelpTip";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import * as pinnedDirs from "../services/pinned-dirs";
 
 interface Props {
   paneId: string;
@@ -17,6 +19,53 @@ export function PaneLabel(props: Props) {
 
   const visible = () => !!(cwd() || branch() || shell());
   const dimmed = () => props.focused();
+  const [isPinnedDir, setIsPinnedDir] = createSignal(false);
+
+  // Check if current CWD is pinned
+  const checkPinned = async () => {
+    const cwdPath = cwd();
+    if (!cwdPath) return;
+    const pinned = await pinnedDirs.isPinned(cwdPath);
+    setIsPinnedDir(pinned);
+  };
+
+  // Re-check when CWD changes
+  const cwdValue = cwd();
+  if (cwdValue) {
+    checkPinned();
+  }
+
+  const handleRevealInFinder = async (e: MouseEvent) => {
+    e.stopPropagation();
+    const cwdPath = cwd();
+    if (!cwdPath) return;
+    
+    try {
+      await revealItemInDir(cwdPath);
+    } catch (err) {
+      console.error("Failed to reveal directory:", cwdPath, err);
+    }
+  };
+
+  const handleTogglePin = async (e: MouseEvent) => {
+    e.stopPropagation();
+    const cwdPath = cwd();
+    if (!cwdPath) return;
+    
+    try {
+      if (isPinnedDir()) {
+        await pinnedDirs.unpinDir(cwdPath);
+        setIsPinnedDir(false);
+      } else {
+        await pinnedDirs.pinDir(cwdPath);
+        setIsPinnedDir(true);
+      }
+      // Dispatch event to refresh pinned dirs list in App.tsx
+      window.dispatchEvent(new CustomEvent("pinned-dirs-changed"));
+    } catch (err) {
+      console.error("Failed to toggle pin:", cwdPath, err);
+    }
+  };
 
   return (
     <Show when={visible()}>
@@ -36,6 +85,20 @@ export function PaneLabel(props: Props) {
           <span class="pane-label-row">
             <Show when={cwd()}>
               <span class="pl-cwd">{cwd()}</span>
+              <button
+                class="pl-pin-btn"
+                onClick={handleTogglePin}
+                title={isPinnedDir() ? "Unpin directory" : "Pin directory"}
+              >
+                {isPinnedDir() ? "📌" : "📍"}
+              </button>
+              <button
+                class="pl-reveal-btn"
+                onClick={handleRevealInFinder}
+                title="Reveal in Finder"
+              >
+                📂
+              </button>
             </Show>
             <Show when={branch()}>
               <span class="pl-sep">·</span>

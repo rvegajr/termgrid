@@ -5,7 +5,12 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:event:default",
+    "core:window:default",
     "opener:default",
+    "opener:allow-open-path",
+    "opener:allow-reveal-item-in-dir",
+    "opener:allow-open-url",
     "deep-link:default"
   ]
 }

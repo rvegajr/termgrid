@@ -50,7 +50,7 @@ pub trait ShellDetector: Send + Sync {
     fn default_shell(&self) -> ShellInfo;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShellInfo {
     pub name: String,
     pub path: String,

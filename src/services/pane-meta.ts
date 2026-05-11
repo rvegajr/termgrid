@@ -1,5 +1,6 @@
 import { createSignal } from "solid-js";
 import type { Terminal } from "@xterm/xterm";
+import * as recentCwds from "./recent-cwds";
 
 export interface PaneMeta {
   cwd?: string;
@@ -23,6 +24,13 @@ function patchMeta(paneId: string, patch: Partial<PaneMeta>) {
     if (next.cwd === cur.cwd && next.branch === cur.branch && next.shell === cur.shell && next.source === cur.source) {
       return prev;
     }
+    
+    // Track CWD changes for recent CWDs list
+    if (patch.cwd && patch.cwd !== cur.cwd) {
+      // Record the CWD (with ~ if present, backend will expand)
+      recentCwds.recordCwd(patch.cwd).catch(() => {});
+    }
+    
     return { ...prev, [paneId]: next };
   });
 }

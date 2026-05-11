@@ -49,6 +49,9 @@ const EMPTY: Workspace = {
   defaultLayoutPreset: "auto",
 };
 
+/** Memoized workspace cache — invalidated on save. */
+let workspaceCache: Workspace | null = null;
+
 /** True if a real saved workspace exists (≥1 tab with ≥1 pane). */
 export function hasSavedWorkspace(): boolean {
   const ws = loadWorkspace();
@@ -62,20 +65,74 @@ export function describeSavedWorkspace(): { tabCount: number; paneCount: number;
   return { tabCount: ws.tabs.length, paneCount, savedAt: ws.savedAt };
 }
 
+/**
+ * Check if the saved workspace is "fresh" (within the given hour window).
+ * Used to offer auto-restore for recently closed sessions.
+ */
+export function isWorkspaceFresh(withinHours: number): boolean {
+  const ws = loadWorkspace();
+  if (!ws.savedAt || !hasSavedWorkspace()) return false;
+  const ageMs = Date.now() - ws.savedAt;
+  const ageHours = ageMs / (1000 * 60 * 60);
+  return ageHours <= withinHours;
+}
+
+/**
+ * Track whether the user dismissed the auto-restore banner for this session.
+ * Keyed by savedAt timestamp to avoid re-showing for the same workspace.
+ */
+const AUTO_RESTORE_DISMISSED_KEY = "termgrid.autoRestoreDismissed";
+
+export function hasUserDismissedAutoRestore(): boolean {
+  const ws = loadWorkspace();
+  if (!ws.savedAt) return false;
+  try {
+    const dismissed = localStorage.getItem(AUTO_RESTORE_DISMISSED_KEY);
+    return dismissed === String(ws.savedAt);
+  } catch {
+    return false;
+  }
+}
+
+export function markAutoRestoreDismissed(): void {
+  const ws = loadWorkspace();
+  if (!ws.savedAt) return;
+  try {
+    localStorage.setItem(AUTO_RESTORE_DISMISSED_KEY, String(ws.savedAt));
+  } catch {}
+}
+
 export function loadWorkspace(): Workspace {
+  // Return cached value if available
+  if (workspaceCache !== null) {
+    return workspaceCache;
+  }
+
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return EMPTY;
+    if (!raw) {
+      workspaceCache = EMPTY;
+      return EMPTY;
+    }
     const parsed = JSON.parse(raw) as Workspace;
-    if (!parsed || !Array.isArray(parsed.tabs)) return EMPTY;
-    return { ...EMPTY, ...parsed };
+    if (!parsed || !Array.isArray(parsed.tabs)) {
+      workspaceCache = EMPTY;
+      return EMPTY;
+    }
+    const result = { ...EMPTY, ...parsed };
+    workspaceCache = result;
+    return result;
   } catch {
+    workspaceCache = EMPTY;
     return EMPTY;
   }
 }
 
 let saveTimer: number | null = null;
 export function saveWorkspace(ws: Workspace) {
+  // Invalidate cache so next loadWorkspace() reads fresh data
+  workspaceCache = null;
+  
   if (saveTimer !== null) {
     clearTimeout(saveTimer);
   }
@@ -89,6 +146,7 @@ export function saveWorkspace(ws: Workspace) {
 }
 
 export function clearWorkspace() {
+  workspaceCache = null;
   try { localStorage.removeItem(KEY); } catch {}
 }
 

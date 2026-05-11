@@ -19,7 +19,6 @@
 //
 // Everything else in the app imports from here. Keep it one file.
 
-import Peer from "peerjs";
 import { createSignal } from "solid-js";
 
 // --- config -----------------------------------------------------------------
@@ -66,9 +65,14 @@ const panesHandlers = new Set();
 // --- public API -------------------------------------------------------------
 
 /** Start PeerJS, publish our session, become discoverable. */
-export function connect(name = "This device") {
+export async function connect(name = "This device") {
   if (peer) return;
   setStatus("connecting");
+  
+  // Lazy-load peerjs — only when the user clicks "+ Link devices".
+  // Saves ~140-160 KB from the welcome bundle.
+  const { default: Peer } = await import("peerjs");
+  
   const opts = RELAY_HOST
     ? { host: RELAY_HOST, port: RELAY_PORT, path: RELAY_PATH, secure: true }
     : undefined;

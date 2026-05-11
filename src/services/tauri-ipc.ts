@@ -6,8 +6,17 @@ export interface ShellInfo {
   kind: string;
 }
 
+export interface ShellsWithDefault {
+  shells: ShellInfo[];
+  default: ShellInfo;
+}
+
 export interface CreatePaneResult {
   pane_id: string;
+}
+
+export async function listShellsWithDefault(): Promise<ShellsWithDefault> {
+  return invoke<ShellsWithDefault>('list_shells_with_default');
 }
 
 export async function listShells(): Promise<ShellInfo[]> {

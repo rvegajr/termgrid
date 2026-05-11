@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod commands;
 pub mod config;
 pub mod history;
@@ -5,6 +6,7 @@ pub mod history_commands;
 pub mod pty;
 pub mod snapshot;
 pub mod state;
+pub mod window_geometry;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -15,6 +17,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
+            commands::list_shells_with_default,
             commands::list_shells,
             commands::default_shell,
             commands::create_pane,
@@ -29,6 +32,15 @@ pub fn run() {
             history_commands::history_search,
             history_commands::history_recent,
         ])
+        .setup(|app| {
+            // Apply cached window geometry before showing the window
+            window_geometry::apply_cached_geometry(app.handle(), "main");
+
+            // Start tracking geometry changes
+            window_geometry::start_geometry_tracking(app.handle().clone(), "main".to_string());
+
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

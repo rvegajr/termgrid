@@ -57,8 +57,11 @@ describe("relay", () => {
 
   it("connect() transitions offline → connecting → online", async () => {
     const r = await loadRelay();
-    r.connect();
+    // connect() is now async due to dynamic import — by the time it resolves,
+    // the FakePeer microtask has already transitioned to "online"
+    const connectPromise = r.connect();
     expect(r.linkStatus()).toBe("connecting");
+    await connectPromise;
     await flush();
     expect(r.linkStatus()).toBe("online");
   });
@@ -109,7 +112,7 @@ describe("relay", () => {
 
   it("hello from remote registers a non-local session", async () => {
     const r = await loadRelay();
-    r.connect();
+    await r.connect();
     await flush();
     const conn = FakePeer.last!.inbound("remote-1");
     conn.emit("open");
@@ -125,7 +128,7 @@ describe("relay", () => {
 
   it("state message updates an existing peer in place (no duplicate)", async () => {
     const r = await loadRelay();
-    r.connect();
+    await r.connect();
     await flush();
     const conn = FakePeer.last!.inbound("remote-1");
     conn.emit("open");
@@ -138,7 +141,7 @@ describe("relay", () => {
 
   it("updateLocalSession patches local and broadcasts state to peers", async () => {
     const r = await loadRelay();
-    r.connect();
+    await r.connect();
     await flush();
     const conn = FakePeer.last!.inbound("remote-1");
     conn.emit("open");
@@ -152,7 +155,7 @@ describe("relay", () => {
 
   it("sendInput only fires when active session is remote", async () => {
     const r = await loadRelay();
-    r.connect();
+    await r.connect();
     await flush();
     const conn = FakePeer.last!.inbound("remote-1");
     conn.emit("open");
@@ -171,7 +174,7 @@ describe("relay", () => {
 
   it("onRemoteInput / onRemoteOutput deliver messages and unsubscribe cleanly", async () => {
     const r = await loadRelay();
-    r.connect();
+    await r.connect();
     await flush();
     const conn = FakePeer.last!.inbound("remote-1");
     conn.emit("open");
@@ -193,7 +196,7 @@ describe("relay", () => {
 
   it("bye / close removes the peer and resets active if it was selected", async () => {
     const r = await loadRelay();
-    r.connect();
+    await r.connect();
     await flush();
     const conn = FakePeer.last!.inbound("remote-1");
     conn.emit("open");
@@ -207,7 +210,7 @@ describe("relay", () => {
 
   it("disconnect sends bye, drops all peers, returns to offline", async () => {
     const r = await loadRelay();
-    r.connect();
+    await r.connect();
     await flush();
     const conn = FakePeer.last!.inbound("remote-1");
     conn.emit("open");
@@ -221,7 +224,7 @@ describe("relay", () => {
 
   it("panes message updates remotePanes signal and fires onRemotePanes", async () => {
     const r = await loadRelay();
-    r.connect();
+    await r.connect();
     await flush();
     const conn = FakePeer.last!.inbound("remote-1");
     conn.emit("open");
@@ -241,7 +244,7 @@ describe("relay", () => {
 
   it("close clears remotePanes for that peer", async () => {
     const r = await loadRelay();
-    r.connect();
+    await r.connect();
     await flush();
     const conn = FakePeer.last!.inbound("remote-1");
     conn.emit("open");
@@ -253,7 +256,7 @@ describe("relay", () => {
 
   it("malformed messages are ignored (no throw)", async () => {
     const r = await loadRelay();
-    r.connect();
+    await r.connect();
     await flush();
     const conn = FakePeer.last!.inbound("remote-1");
     conn.emit("open");

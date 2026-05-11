@@ -4,7 +4,7 @@ use tauri::State;
 
 #[tauri::command]
 pub fn history_record(state: State<AppState>, row: HistoryRow) -> Result<i64, String> {
-    state.history.record(row)
+    state.get_history().record(row)
 }
 
 #[tauri::command]
@@ -14,7 +14,7 @@ pub fn history_search(
     query: String,
     limit: u32,
 ) -> Result<Vec<HistoryRecord>, String> {
-    state.history.search(scope, &query, limit)
+    state.get_history().search(scope, &query, limit)
 }
 
 #[tauri::command]
@@ -23,5 +23,5 @@ pub fn history_recent(
     pane_id: String,
     limit: u32,
 ) -> Result<Vec<HistoryRecord>, String> {
-    state.history.recent(&pane_id, limit)
+    state.get_history().recent(&pane_id, limit)
 }

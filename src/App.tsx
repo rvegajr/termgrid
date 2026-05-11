@@ -1,10 +1,10 @@
 import { createSignal, createMemo, onMount, For, createEffect, Show, batch } from "solid-js";
 import "@xterm/xterm/css/xterm.css";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { SearchAddon } from "@xterm/addon-search";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { listen } from "@tauri-apps/api/event";
+import { loadTerminalModules, prefetchTerminalModules } from "./services/terminal-loader";
+import type { Terminal } from "@xterm/xterm";
+import type { FitAddon } from "@xterm/addon-fit";
+import type { SearchAddon } from "@xterm/addon-search";
 import * as ipc from "./services/tauri-ipc";
 import {
   calculateLayoutPreset,
@@ -25,15 +25,22 @@ import {
   remoteSessions,
 } from "./services/relay";
 import { RemoteViewer } from "./components/RemoteViewer";
-import { terminalPrefs, fontStack } from "./services/terminal-prefs";
+import { terminalPrefs, fontStack, loadCachedCellDimensions, saveCellDimensions } from "./services/terminal-prefs";
 import {
   loadWorkspace,
   saveWorkspace,
   newStableId,
   hasSavedWorkspace,
   describeSavedWorkspace,
+  isWorkspaceFresh,
+  hasUserDismissedAutoRestore,
+  markAutoRestoreDismissed,
   type Workspace,
 } from "./services/workspace";
+import * as mruShell from "./services/mru-shell";
+import * as pinnedDirs from "./services/pinned-dirs";
+import * as recentCwds from "./services/recent-cwds";
+import { getTabIcon } from "./services/tab-icons";
 import {
   installDeepLinkHandler,
   onOpenRequest,
@@ -46,9 +53,15 @@ import {
   forgetPaneId,
   type SnapshotHandle,
 } from "./services/pane-snapshot";
-import { attachMeta, detachMeta, feedRaw } from "./services/pane-meta";
+import { attachMeta, detachMeta, feedRaw, paneMetaMap } from "./services/pane-meta";
 import { attachRecorder, detachRecorder, feedHistoryRaw } from "./services/history";
 import { PaneLabel } from "./components/PaneLabel";
+import { CommandPalette, type Command } from "./components/CommandPalette";
+import { GlobalSearch } from "./components/GlobalSearch";
+import { TemplateManager } from "./components/TemplateManager";
+import * as sessionTemplates from "./services/session-templates";
+import * as shellProfiles from "./services/shell-profiles";
+import * as themes from "./services/themes";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { localPeerId } from "./services/relay";
 import "./App.css";
@@ -62,6 +75,7 @@ interface PaneState {
   searchAddon: SearchAddon;
   shellType: string;
   snapshot: SnapshotHandle;
+  shouldRestoreSnapshot: boolean; // false for brand-new panes, true for hydrated ones
 }
 
 interface TabState {
@@ -146,6 +160,53 @@ function App() {
     return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
   }
 
+  /**
+   * Auto-name a tab from its first pane's CWD.
+   * Subscribes once to paneMetaMap, sets tab.name when CWD resolves,
+   * then unsubscribes. Skips if the user manually edited the name.
+   */
+  function autoNameTabFromCwd(tabId: string, paneBackendId: string) {
+    let hasNamed = false;
+    
+    createEffect(() => {
+      if (hasNamed) return;
+      
+      const meta = paneMetaMap()[paneBackendId];
+      const cwd = meta?.cwd;
+      if (!cwd) return;
+
+      // Check if the tab still exists and hasn't been renamed
+      const tab = tabs().find(t => t.id === tabId);
+      if (!tab) {
+        hasNamed = true;
+        return;
+      }
+
+      // Check if user has manually renamed (doesn't match default pattern)
+      const tabNumber = tabs().findIndex(t => t.id === tabId) + 1;
+      const defaultName = `Tab ${tabNumber}`;
+      if (tab.name !== defaultName) {
+        // User renamed it, don't override
+        hasNamed = true;
+        return;
+      }
+
+      // Set name from CWD basename or shell type
+      const basename = pathBaseName(cwd);
+      const shellType = meta?.shell;
+      const newName = basename || shellType || `Tab ${tabNumber}`;
+      
+      setTabs(prev =>
+        prev.map(t =>
+          t.id === tabId ? { ...t, name: newName } : t
+        )
+      );
+
+      // Mark as named to prevent future updates
+      hasNamed = true;
+    });
+  }
+
   function formatRelativeTime(ts: number): string {
     const diff = Date.now() - ts;
     if (diff < 60_000) return "just now";
@@ -172,6 +233,24 @@ function App() {
   // workspace before hydrate finishes its async pane spawns.
   const [hydrated, setHydrated] = createSignal(false);
   let tilingRef: HTMLDivElement | undefined;
+  // PTY output listener setup promise — createPaneState awaits this before spawning.
+  let ptyListenerReady: Promise<void> | null = null;
+  // Terminal cell dimensions (measured once at startup, updated on font change).
+  const [cellDimensions, setCellDimensions] = createSignal<{ width: number; height: number } | null>(null);
+  // Most recently used shell (for welcome screen)
+  const [mruShellPath, setMruShellPath] = createSignal<string | null>(null);
+  const [pinnedDirsList, setPinnedDirsList] = createSignal<pinnedDirs.PinnedDir[]>([]);
+  const [recentCwdsList, setRecentCwdsList] = createSignal<recentCwds.RecentCwd[]>([]);
+  const [showAutoRestoreBanner, setShowAutoRestoreBanner] = createSignal(false);
+  const [welcomeShellIndex, setWelcomeShellIndex] = createSignal(0);
+  const [draggedTabId, setDraggedTabId] = createSignal<string | null>(null);
+  const [dragOverTabId, setDragOverTabId] = createSignal<string | null>(null);
+  const [showCommandPalette, setShowCommandPalette] = createSignal(false);
+  const [showGlobalSearch, setShowGlobalSearch] = createSignal(false);
+  const [showTemplateManager, setShowTemplateManager] = createSignal(false);
+  const [shellProfilesList, setShellProfilesList] = createSignal<shellProfiles.ShellProfile[]>([]);
+  const [currentTheme, setCurrentTheme] = createSignal<themes.TerminalTheme>(themes.BUILT_IN_THEMES[0]);
+  const [showThemePicker, setShowThemePicker] = createSignal(false);
 
   function updateOffsets(id: string, next: EdgeOffsets) {
     setEdgeOffsets((prev) => ({ ...prev, [id]: next }));
@@ -197,16 +276,59 @@ function App() {
   }
 
   onMount(async () => {
-    const [availableShells, dflt] = await Promise.all([
-      ipc.listShells(),
-      ipc.defaultShell().catch(() => null),
-    ]);
-    setShells(availableShells);
-    setDefaultShellInfo(dflt);
+    // Remove splash screen now that SolidJS has mounted
+    const splash = document.getElementById("splash");
+    if (splash) splash.remove();
 
-    // Listen for PTY output FIRST — must be attached before any pane spawns,
-    // otherwise the initial shell prompt is emitted with no listener and lost.
-    await listen<{ pane_id: string; data: number[] }>("pty-output", (event) => {
+    // Load cached cell dimensions for faster PTY sizing
+    const cachedDims = await loadCachedCellDimensions();
+    if (cachedDims) {
+      setCellDimensions(cachedDims);
+    }
+
+    // Load MRU shell for welcome screen
+    const mru = await mruShell.getMruShell();
+    if (mru) {
+      setMruShellPath(mru.path);
+    }
+    
+    // Load pinned directories
+    const pinned = await pinnedDirs.getPinnedDirs();
+    setPinnedDirsList(pinned);
+    
+    // Refresh pinned dirs when changed
+    const refreshPinnedDirs = async () => {
+      const dirs = await pinnedDirs.getPinnedDirs();
+      setPinnedDirsList(dirs);
+    };
+    window.addEventListener("pinned-dirs-changed", refreshPinnedDirs);
+    
+    // Load recent CWDs
+    const recent = await recentCwds.getTopRecentCwds(5);
+    setRecentCwdsList(recent);
+    
+    // Load shell profiles
+    const profiles = await shellProfiles.getProfiles();
+    setShellProfilesList(profiles);
+    
+    // Load selected theme
+    const theme = await themes.getSelectedTheme();
+    setCurrentTheme(theme);
+    
+    // Check if we should show auto-restore banner
+    const withinHours = terminalPrefs().autoRestoreWithinHours;
+    if (isWorkspaceFresh(withinHours) && !hasUserDismissedAutoRestore()) {
+      setShowAutoRestoreBanner(true);
+    }
+
+    // Single IPC with caching — detects shells once, avoids double $PATH walk.
+    const shellsData = await ipc.listShellsWithDefault();
+    setShells(shellsData.shells);
+    setDefaultShellInfo(shellsData.default);
+
+    // Set up PTY output listener in parallel — createPaneState will await this
+    // before spawning, but we don't block the welcome card on it.
+    ptyListenerReady = listen<{ pane_id: string; data: number[] }>("pty-output", (event) => {
       const pane = panes().find(p => p.backendId === event.payload.pane_id);
       if (pane) {
         const bytes = new Uint8Array(event.payload.data);
@@ -218,16 +340,17 @@ function App() {
         // Mirror to any linked peer that's watching us
         broadcastOutput(pane.backendId, bytes);
       }
-    });
+    }).then(() => {});
 
     // Always show the welcome screen on launch — the user explicitly chooses
     // whether to restore a previous session or start fresh. Avoids the
     // surprise of auto-spawning shells the user didn't ask for.
     setHydrated(true);
 
-    // Wire up `termgrid://` deep-links from Finder / Explorer / Nautilus.
+    // Wire up `termgrid://` deep-links in the background — delivery is rare
+    // and tolerates a small delay. Don't block welcome on it.
     onOpenRequest(handleOpenRequest);
-    await installDeepLinkHandler();
+    Promise.resolve().then(() => installDeepLinkHandler());
 
     // Keybindings
     document.addEventListener("keydown", handleKeyDown);
@@ -266,47 +389,228 @@ function App() {
       e.preventDefault();
       setShowHistory(prev => !prev);
     }
+    // Ctrl+P: open command palette
+    if (e.ctrlKey && e.key === "p") {
+      e.preventDefault();
+      setShowCommandPalette(prev => !prev);
+    }
+    // Ctrl+F: global search
+    if (e.ctrlKey && e.key === "f") {
+      e.preventDefault();
+      setShowGlobalSearch(prev => !prev);
+    }
+    // Ctrl+S: session templates
+    if (e.ctrlKey && e.key === "s") {
+      e.preventDefault();
+      setShowTemplateManager(prev => !prev);
+    }
   }
 
-  async function createPaneState(shell?: string, opts?: { stableId?: string }): Promise<PaneState> {
-    const result = await ipc.createPane(shell);
+  const saveSessionAsTemplate = async (name: string, description: string) => {
+    const template: Omit<sessionTemplates.SessionTemplate, "id" | "createdAt"> = {
+      name,
+      description,
+      tabCount: tabs().length,
+      paneCount: panes().length,
+      layout: {
+        tabs: tabs().map((tab) => ({
+          name: tab.name,
+          paneCount: tab.paneIds.length,
+          layoutPreset: tabLayouts()[tab.id] || "auto",
+        })),
+      },
+    };
+    await sessionTemplates.saveTemplate(template);
+  };
+
+  const loadTemplateLayout = async (template: sessionTemplates.SessionTemplate) => {
+    // Clear current session
+    for (const pane of panes()) {
+      pane.snapshot.destroy(true);
+      detachMeta(pane.backendId);
+      detachRecorder(pane.backendId);
+      forgetPaneId(pane.stableId);
+      pane.terminal.dispose();
+      await ipc.closePane(pane.backendId);
+    }
+    setPanes([]);
+    setTabs([]);
+
+    // Create tabs based on template
+    for (const tabTemplate of template.layout.tabs) {
+      const tabId = `tab-${nextTabId++}`;
+      const paneStates: PaneState[] = [];
+
+      for (let i = 0; i < tabTemplate.paneCount; i++) {
+        const pane = await createPaneState();
+        paneStates.push(pane);
+      }
+
+      const tab: TabState = {
+        id: tabId,
+        name: tabTemplate.name,
+        paneIds: paneStates.map(p => p.id),
+      };
+
+      setPanes(prev => [...prev, ...paneStates]);
+      setTabs(prev => [...prev, tab]);
+      setTabLayouts(prev => ({ ...prev, [tabId]: tabTemplate.layoutPreset as LayoutPreset }));
+    }
+
+    if (tabs().length > 0) {
+      setActiveTabId(tabs()[0].id);
+    }
+  };
+
+  const paletteCommands = (): Command[] => [
+    {
+      id: "new-pane",
+      name: "New Pane",
+      description: "Add a new pane to the active tab",
+      keywords: ["split", "add"],
+      action: () => addPaneToActiveTab(),
+    },
+    {
+      id: "new-tab",
+      name: "New Tab",
+      description: "Create a new tab with a single pane",
+      keywords: ["create"],
+      action: () => addPaneToNewTab(),
+    },
+    {
+      id: "close-pane",
+      name: "Close Active Pane",
+      description: "Close the currently focused pane",
+      keywords: ["remove", "delete"],
+      action: () => closeActivePane(),
+    },
+    {
+      id: "close-tab",
+      name: "Close Active Tab",
+      description: "Close the active tab and all its panes",
+      keywords: ["remove", "delete"],
+      action: () => {
+        const id = activeTabId();
+        if (id) closeTab(id);
+      },
+    },
+    {
+      id: "history",
+      name: "Command History",
+      description: "Search and execute previous commands",
+      keywords: ["search", "recall"],
+      action: () => setShowHistory(true),
+    },
+    {
+      id: "reset-offsets",
+      name: "Reset All Pane Edges",
+      description: "Reset all pane resize offsets to default layout",
+      keywords: ["layout", "restore"],
+      action: () => resetAllOffsets(),
+    },
+    {
+      id: "layout-auto",
+      name: "Layout: Auto",
+      description: "Set layout to auto-tiling",
+      keywords: ["preset", "tiling"],
+      action: () => setLayoutPreset("auto"),
+    },
+    {
+      id: "layout-grid",
+      name: "Layout: Grid",
+      description: "Set layout to uniform grid",
+      keywords: ["preset", "square"],
+      action: () => setLayoutPreset("grid"),
+    },
+    {
+      id: "themes",
+      name: "Change Theme",
+      description: "Switch terminal color theme",
+      keywords: ["colors", "appearance", "style"],
+      action: () => setShowThemePicker(true),
+    },
+  ];
+
+  async function createPaneState(shell?: string, opts?: { stableId?: string; shouldRestoreSnapshot?: boolean; cwd?: string }): Promise<PaneState> {
+    // Ensure the PTY output listener is ready before spawning — otherwise the
+    // shell's initial prompt might be emitted with no handler and get lost.
+    if (ptyListenerReady) await ptyListenerReady;
+    
+    // Lazy-load xterm modules (cached after first load)
+    const { Terminal, FitAddon, SearchAddon, WebLinksAddon } = await loadTerminalModules();
+    
+    // Estimate terminal size before spawning to avoid the visible re-flow.
+    // Use either measured cell dimensions or fallback to typical values.
+    const cellDims = cellDimensions();
+    const cellWidth = cellDims?.width ?? (terminalPrefs().fontSize * 0.6);
+    const cellHeight = cellDims?.height ?? (terminalPrefs().fontSize * 1.4);
+    
+    // Compute container dimensions for this pane based on the current layout.
+    // If no container exists yet (first pane), use a reasonable default.
+    let containerWidth = 800;
+    let containerHeight = 600;
+    if (tilingRef) {
+      const rect = tilingRef.getBoundingClientRect();
+      containerWidth = rect.width;
+      containerHeight = rect.height;
+    }
+    
+    const cols = Math.max(40, Math.floor(containerWidth / cellWidth));
+    const rows = Math.max(10, Math.floor(containerHeight / cellHeight));
+    
+    const result = await ipc.createPane(shell, opts?.cwd, cols, rows);
     const id = `pane-${nextPaneId++}`;
     const stableId = opts?.stableId ?? newStableId();
+    const shouldRestoreSnapshot = opts?.shouldRestoreSnapshot ?? false;
 
+    const theme = currentTheme();
     const terminal = new Terminal({
       cursorBlink: terminalPrefs().cursorBlink,
       fontSize: terminalPrefs().fontSize,
-      scrollback: 100_000,
+      scrollback: terminalPrefs().scrollbackLines,
       fontFamily: fontStack(),
       theme: {
-        background: "#1e1e2e",
-        foreground: "#cdd6f4",
-        cursor: "#f5e0dc",
-        cursorAccent: "#1e1e2e",
-        selectionBackground: "#585b7066",
-        black: "#45475a",
-        red: "#f38ba8",
-        green: "#a6e3a1",
-        yellow: "#f9e2af",
-        blue: "#89b4fa",
-        magenta: "#f5c2e7",
-        cyan: "#94e2d5",
-        white: "#bac2de",
-        brightBlack: "#585b70",
-        brightRed: "#f38ba8",
-        brightGreen: "#a6e3a1",
-        brightYellow: "#f9e2af",
-        brightBlue: "#89b4fa",
-        brightMagenta: "#f5c2e7",
-        brightCyan: "#94e2d5",
-        brightWhite: "#a6adc8",
+        background: theme.background,
+        foreground: theme.foreground,
+        cursor: theme.cursor,
+        cursorAccent: theme.cursorAccent,
+        selectionBackground: theme.selectionBackground,
+        black: theme.black,
+        red: theme.red,
+        green: theme.green,
+        yellow: theme.yellow,
+        blue: theme.blue,
+        magenta: theme.magenta,
+        cyan: theme.cyan,
+        white: theme.white,
+        brightBlack: theme.brightBlack,
+        brightRed: theme.brightRed,
+        brightGreen: theme.brightGreen,
+        brightYellow: theme.brightYellow,
+        brightBlue: theme.brightBlue,
+        brightMagenta: theme.brightMagenta,
+        brightCyan: theme.brightCyan,
+        brightWhite: theme.brightWhite,
       },
     });
 
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon();
+    
+    // Web links addon - opens URLs in default browser
+    const webLinksAddon = new WebLinksAddon(async (event: MouseEvent, uri: string) => {
+      event.preventDefault();
+      try {
+        const { openUrl } = await import("@tauri-apps/plugin-opener");
+        await openUrl(uri);
+      } catch (err) {
+        console.error("Failed to open URL:", uri, err);
+      }
+    });
+    
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
+    terminal.loadAddon(webLinksAddon);
 
     // Snapshot keyed by stableId so scrollback survives PTY rotation.
     const snapshot = attachSnapshot(stableId, terminal);
@@ -333,6 +637,7 @@ function App() {
       searchAddon,
       shellType: shell ?? "default",
       snapshot,
+      shouldRestoreSnapshot,
     };
   }
 
@@ -348,7 +653,7 @@ function App() {
       const tabPanes: string[] = [];
       for (const sid of t.paneStableIds) {
         const meta = ws.panes[sid];
-        const pane = await createPaneState(meta?.shellType, { stableId: sid });
+        const pane = await createPaneState(meta?.shellType, { stableId: sid, shouldRestoreSnapshot: true });
         newPanes.push(pane);
         tabPanes.push(pane.id);
         // Translate persisted edge offsets stableId → runtime pane.id.
@@ -356,7 +661,7 @@ function App() {
         if (savedOffsets) newEdgeOffsets[pane.id] = savedOffsets;
       }
       if (tabPanes.length === 0) {
-        const pane = await createPaneState();
+        const pane = await createPaneState(undefined, { shouldRestoreSnapshot: false });
         newPanes.push(pane);
         tabPanes.push(pane.id);
       }
@@ -380,8 +685,8 @@ function App() {
     });
   }
 
-  async function addPaneToNewTab(shell?: string) {
-    const pane = await createPaneState(shell);
+  async function addPaneToNewTab(shell?: string, cwd?: string, profileCommands?: string[]) {
+    const pane = await createPaneState(shell, { cwd });
     const tabId = `tab-${nextTabId++}`;
     const tab: TabState = {
       id: tabId,
@@ -391,6 +696,25 @@ function App() {
     setPanes(prev => [...prev, pane]);
     setTabs(prev => [...prev, tab]);
     setActiveTabId(tabId);
+    
+    // Auto-name tab from CWD when it's first resolved
+    autoNameTabFromCwd(tabId, pane.backendId);
+    
+    // Execute profile commands if provided
+    if (profileCommands && profileCommands.length > 0) {
+      // Wait a moment for shell to initialize
+      setTimeout(() => {
+        for (const cmd of profileCommands) {
+          ipc.writePane(pane.backendId, cmd + "\n");
+        }
+      }, 500);
+    }
+    
+    // Record shell use for MRU tracking
+    if (shell) {
+      mruShell.recordShellUse(shell);
+      setMruShellPath(shell);
+    }
   }
 
   async function addPaneToActiveTab(shell?: string) {
@@ -403,6 +727,12 @@ function App() {
         t.id === tabId ? { ...t, paneIds: [...t.paneIds, pane.id] } : t
       )
     );
+    
+    // Record shell use for MRU tracking
+    if (shell) {
+      mruShell.recordShellUse(shell);
+      setMruShellPath(shell);
+    }
   }
 
   async function addGridTab(paneCount: number, preset: LayoutPreset, label: string) {
@@ -487,17 +817,49 @@ function App() {
     }
 
     pane.terminal.open(el);
-    try {
-      pane.terminal.loadAddon(new WebglAddon());
-    } catch {
-      // WebGL not available, fallback to canvas
-    }
     pane.fitAddon.fit();
     mountedPanes.add(pane.id);
+    
+    // Defer WebGL addon loading until browser is idle (non-blocking)
+    const loadWebGL = () => {
+      loadTerminalModules().then(({ WebglAddon }) => {
+        try {
+          pane.terminal.loadAddon(new WebglAddon());
+        } catch {
+          // WebGL not available, fallback to canvas
+        }
+      });
+    };
+    
+    // Use requestIdleCallback if available, otherwise setTimeout fallback
+    if ('requestIdleCallback' in window) {
+      requestIdleCallback(loadWebGL);
+    } else {
+      setTimeout(loadWebGL, 100);
+    }
+    
+    // Measure cell dimensions from the first terminal — used to spawn
+    // subsequent panes at the correct size. xterm only exposes these
+    // metrics via an internal _core API; fall back to estimates if not available.
+    if (!cellDimensions()) {
+      try {
+        const core = (pane.terminal as any)._core;
+        if (core?.viewport?._renderer?.dimensions) {
+          const dims = core.viewport._renderer.dimensions;
+          const measured = { width: dims.actualCellWidth, height: dims.actualCellHeight };
+          setCellDimensions(measured);
+          // Cache for future launches
+          saveCellDimensions(measured);
+        }
+      } catch {}
+    }
 
     // Restore prior scrollback (if any) — keyed by stable id, so it
     // survives across launches even though the PTY backend id rotates.
-    restoreSnapshot(pane.stableId, pane.terminal);
+    // Skip the IPC for brand-new panes (always returns null).
+    if (pane.shouldRestoreSnapshot) {
+      restoreSnapshot(pane.stableId, pane.terminal);
+    }
 
     // Refit on container resize
     const observer = new ResizeObserver(() => {
@@ -621,13 +983,59 @@ function App() {
           {(tab) => (
             <HelpTip
               title={tab.name}
-              description={`Click to switch to this tab. Contains ${tab.paneIds.length} pane(s). Right-click for rename / color (coming soon).`}
+              description={`Click to switch to this tab. Contains ${tab.paneIds.length} pane(s). Drag to reorder.`}
               badge={false}
             >
               <div
-                class={`tab ${tab.id === activeTabId() ? "active" : ""}`}
+                class={`tab ${tab.id === activeTabId() ? "active" : ""} ${draggedTabId() === tab.id ? "dragging" : ""} ${dragOverTabId() === tab.id ? "drag-over" : ""}`}
                 onClick={() => setActiveTabId(tab.id)}
+                draggable={true}
+                onDragStart={(e) => {
+                  setDraggedTabId(tab.id);
+                  e.dataTransfer!.effectAllowed = "move";
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer!.dropEffect = "move";
+                  setDragOverTabId(tab.id);
+                }}
+                onDragLeave={() => {
+                  setDragOverTabId(null);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const draggedId = draggedTabId();
+                  const droppedOnId = tab.id;
+                  
+                  if (draggedId && draggedId !== droppedOnId) {
+                    setTabs((prev) => {
+                      const draggedIdx = prev.findIndex(t => t.id === draggedId);
+                      const droppedIdx = prev.findIndex(t => t.id === droppedOnId);
+                      if (draggedIdx === -1 || droppedIdx === -1) return prev;
+                      
+                      const newTabs = [...prev];
+                      const [draggedTab] = newTabs.splice(draggedIdx, 1);
+                      newTabs.splice(droppedIdx, 0, draggedTab);
+                      return newTabs;
+                    });
+                  }
+                  
+                  setDraggedTabId(null);
+                  setDragOverTabId(null);
+                }}
+                onDragEnd={() => {
+                  setDraggedTabId(null);
+                  setDragOverTabId(null);
+                }}
               >
+                {(() => {
+                  // Get icon from first pane's metadata
+                  const firstPaneId = tab.paneIds[0];
+                  const pane = panes().find(p => p.id === firstPaneId);
+                  const meta = pane ? paneMetaMap()[pane.backendId] : undefined;
+                  const icon = getTabIcon(meta?.cwd, meta?.shell ?? pane?.shellType);
+                  return <span class="tab-icon">{icon}</span>;
+                })()}
                 <span class="tab-name">{tab.name}</span>
                 <span class="tab-count">({tab.paneIds.length})</span>
                 <HelpTip
@@ -736,6 +1144,46 @@ function App() {
               <div class="welcome-logo">▦</div>
               <div class="welcome-title">TermGrid</div>
               <div class="welcome-sub">Start a session to begin.</div>
+              
+              {/* Auto-restore banner for fresh sessions */}
+              <Show when={showAutoRestoreBanner()}>
+                <div class="auto-restore-banner">
+                  <div class="arb-icon">💡</div>
+                  <div class="arb-content">
+                    <div class="arb-title">Your recent session is ready to restore</div>
+                    <div class="arb-actions">
+                      <button
+                        class="arb-btn primary"
+                        onClick={() => {
+                          hydrateWorkspace(loadWorkspace());
+                          setShowAutoRestoreBanner(false);
+                        }}
+                      >
+                        Restore Now
+                      </button>
+                      <button
+                        class="arb-btn"
+                        onClick={() => {
+                          markAutoRestoreDismissed();
+                          setShowAutoRestoreBanner(false);
+                        }}
+                      >
+                        Start Fresh
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    class="arb-close"
+                    onClick={() => {
+                      markAutoRestoreDismissed();
+                      setShowAutoRestoreBanner(false);
+                    }}
+                    title="Dismiss"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </Show>
 
               <Show when={hasSavedWorkspace()}>
                 {(() => {
@@ -763,45 +1211,145 @@ function App() {
               </Show>
 
               <div class="welcome-shells">
-                {(() => {
-                  const dflt = defaultShellInfo();
-                  const list = shells();
-                  const isDefault = (s: ipc.ShellInfo) =>
-                    !!dflt && (s.path === dflt.path || s.name === dflt.name);
-                  const sorted = [...list].sort((a, b) => Number(isDefault(b)) - Number(isDefault(a)));
-                  if (sorted.length === 0 && dflt) sorted.push(dflt);
-                  return (
-                    <For each={sorted}>
-                      {(s) => {
-                        const isMacBash = s.path === "/bin/bash" && /Mac/i.test(navigator.userAgent);
-                        return (
-                          <button
-                            class={`welcome-shell-btn ${isDefault(s) ? "default" : ""} ${isMacBash ? "warn" : ""}`}
-                            onClick={() => addPaneToNewTab(s.path)}
-                            title={isMacBash
-                              ? "macOS ships an old bash 3.2 that prints a deprecation warning on launch — pick zsh instead."
-                              : s.path}
-                          >
-                            <Show when={isDefault(s)}>
-                              <span class="ws-default-tag">DEFAULT</span>
-                            </Show>
-                            <Show when={isMacBash}>
-                              <span class="ws-warn-tag">OLD</span>
-                            </Show>
-                            <span class="ws-name">{s.name}</span>
-                            <span class="ws-kind">{s.path}</span>
-                          </button>
-                        );
-                      }}
-                    </For>
-                  );
-                })()}
-                <Show when={shells().length === 0 && !defaultShellInfo()}>
-                  <button class="welcome-shell-btn" onClick={() => addPaneToNewTab()}>
-                    <span class="ws-name">Default shell</span>
-                  </button>
+                <Show
+                  when={shells().length > 0 || defaultShellInfo()}
+                  fallback={
+                    <button class="welcome-shell-btn default" onClick={() => addPaneToNewTab()}>
+                      <span class="ws-default-tag">DEFAULT</span>
+                      <span class="ws-name">Default shell</span>
+                      <span class="ws-kind">Opens your system shell</span>
+                    </button>
+                  }
+                >
+                  {(() => {
+                    const dflt = defaultShellInfo();
+                    const list = shells();
+                    const mru = mruShellPath();
+                    const isDefault = (s: ipc.ShellInfo) =>
+                      !!dflt && (s.path === dflt.path || s.name === dflt.name);
+                    const isMru = (s: ipc.ShellInfo) => !!mru && s.path === mru;
+                    
+                    // Sort: MRU first, then default, then rest
+                    const sorted = [...list].sort((a, b) => {
+                      if (isMru(a) && !isMru(b)) return -1;
+                      if (!isMru(a) && isMru(b)) return 1;
+                      return Number(isDefault(b)) - Number(isDefault(a));
+                    });
+                    if (sorted.length === 0 && dflt) sorted.push(dflt);
+                    
+                    return (
+                      <For each={sorted}>
+                        {(s, idx) => {
+                          const isMacBash = s.path === "/bin/bash" && /Mac/i.test(navigator.userAgent);
+                          const isMruShell = isMru(s);
+                          return (
+                            <button
+                              ref={(el) => {
+                                // Auto-focus based on keyboard selection or MRU
+                                if (idx() === welcomeShellIndex()) {
+                                  setTimeout(() => el.focus(), 100);
+                                }
+                              }}
+                              class={`welcome-shell-btn ${isDefault(s) && !isMruShell ? "default" : ""} ${isMruShell ? "mru" : ""} ${isMacBash ? "warn" : ""} ${idx() === welcomeShellIndex() ? "kb-focused" : ""}`}
+                              onClick={() => addPaneToNewTab(s.path)}
+                              onMouseEnter={() => {
+                                prefetchTerminalModules();
+                                setWelcomeShellIndex(idx());
+                              }}
+                              title={isMacBash
+                                ? "macOS ships an old bash 3.2 that prints a deprecation warning on launch — pick zsh instead."
+                                : s.path}
+                            >
+                              <Show when={isMruShell}>
+                                <span class="ws-mru-tag">LAST USED</span>
+                              </Show>
+                              <Show when={isDefault(s) && !isMruShell}>
+                                <span class="ws-default-tag">DEFAULT</span>
+                              </Show>
+                              <Show when={isMacBash}>
+                                <span class="ws-warn-tag">OLD</span>
+                              </Show>
+                              <span class="ws-name">{s.name}</span>
+                              <span class="ws-kind">{s.path}</span>
+                            </button>
+                          );
+                        }}
+                      </For>
+                    );
+                  })()}
                 </Show>
               </div>
+              
+              {/* Pinned Directories */}
+              <Show when={pinnedDirsList().length > 0}>
+                <div class="welcome-divider"><span>quick links</span></div>
+                <div class="welcome-pinned-dirs">
+                  <For each={pinnedDirsList()}>
+                    {(dir) => {
+                      const displayName = dir.label ?? pinnedDirs.pathBaseName(dir.path);
+                      return (
+                        <button
+                          class="pinned-dir-btn"
+                          onClick={() => addPaneToNewTab(undefined, dir.path)}
+                          title={dir.path}
+                        >
+                          <span class="pd-icon">📁</span>
+                          <span class="pd-name">{displayName}</span>
+                          <span class="pd-path">{dir.path}</span>
+                        </button>
+                      );
+                    }}
+                  </For>
+                </div>
+              </Show>
+              
+              {/* Shell Profiles */}
+              <Show when={shellProfilesList().length > 0}>
+                <div class="welcome-divider"><span>shell profiles</span></div>
+                <div class="welcome-pinned-dirs">
+                  <For each={shellProfilesList().slice(0, 5)}>
+                    {(profile) => {
+                      return (
+                        <button
+                          class="pinned-dir-btn profile"
+                          onClick={() => addPaneToNewTab(profile.shell, profile.cwd, profile.commands)}
+                          title={`${profile.shell}${profile.cwd ? ` in ${profile.cwd}` : ""}${profile.commands.length > 0 ? ` · ${profile.commands.length} command(s)` : ""}`}
+                        >
+                          <span class="pd-icon">⚙️</span>
+                          <span class="pd-name">{profile.name}</span>
+                          <span class="pd-path">
+                            {profile.cwd || profile.shell}
+                            {profile.commands.length > 0 && ` · ${profile.commands.length} cmd`}
+                          </span>
+                        </button>
+                      );
+                    }}
+                  </For>
+                </div>
+              </Show>
+              
+              {/* Recent CWDs */}
+              <Show when={recentCwdsList().length > 0 && pinnedDirsList().length === 0 && shellProfilesList().length === 0}>
+                <div class="welcome-divider"><span>recent directories</span></div>
+                <div class="welcome-pinned-dirs">
+                  <For each={recentCwdsList()}>
+                    {(cwd) => {
+                      const displayName = recentCwds.pathBaseName(cwd.path);
+                      return (
+                        <button
+                          class="pinned-dir-btn recent"
+                          onClick={() => addPaneToNewTab(undefined, cwd.path)}
+                          title={cwd.path}
+                        >
+                          <span class="pd-icon">🕒</span>
+                          <span class="pd-name">{displayName}</span>
+                          <span class="pd-path">{cwd.path}</span>
+                        </button>
+                      );
+                    }}
+                  </For>
+                </div>
+              </Show>
 
               <div class="welcome-tips">
                 <kbd>Ctrl+T</kbd> new tab · <kbd>Ctrl+N</kbd> split · <kbd>Ctrl+R</kbd> history
@@ -886,6 +1434,127 @@ function App() {
           if (pane) ipc.writePane(pane.backendId, cmd);
         }}
       />
+
+      {/* Command Palette */}
+      <Show when={showCommandPalette()}>
+        <CommandPalette
+          commands={paletteCommands()}
+          onClose={() => setShowCommandPalette(false)}
+        />
+      </Show>
+
+      {/* Global Search */}
+      <Show when={showGlobalSearch()}>
+        <GlobalSearch
+          panes={panes()}
+          onClose={() => setShowGlobalSearch(false)}
+          onSelectResult={(paneId, lineNumber) => {
+            // Focus the pane
+            const pane = panes().find(p => p.id === paneId);
+            if (!pane) return;
+            
+            // Switch to the tab containing this pane
+            const tab = tabs().find(t => t.paneIds.includes(paneId));
+            if (tab) setActiveTabId(tab.id);
+            
+            // Set focus
+            setFocusedPaneId(paneId);
+            
+            // Scroll to the line (best effort)
+            try {
+              pane.terminal.scrollToLine(lineNumber);
+            } catch {}
+          }}
+        />
+      </Show>
+
+      {/* Session Templates */}
+      <Show when={showTemplateManager()}>
+        <TemplateManager
+          onClose={() => setShowTemplateManager(false)}
+          onLoadTemplate={loadTemplateLayout}
+          onSaveTemplate={saveSessionAsTemplate}
+          currentSession={{
+            tabCount: tabs().length,
+            paneCount: panes().length,
+          }}
+        />
+      </Show>
+
+      {/* Theme Picker */}
+      <Show when={showThemePicker()}>
+        <div
+          class="theme-picker-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowThemePicker(false);
+          }}
+        >
+          <div class="theme-picker">
+            <div class="tp-header">
+              <h2>Choose Theme</h2>
+              <button class="tp-close" onClick={() => setShowThemePicker(false)}>✕</button>
+            </div>
+            <div class="tp-themes">
+              <For each={themes.BUILT_IN_THEMES}>
+                {(theme) => (
+                  <button
+                    class={`tp-theme ${currentTheme().id === theme.id ? "selected" : ""}`}
+                    onClick={async () => {
+                      setCurrentTheme(theme);
+                      await themes.setSelectedTheme(theme.id);
+                      
+                      // Update all existing terminals
+                      for (const pane of panes()) {
+                        pane.terminal.options.theme = {
+                          background: theme.background,
+                          foreground: theme.foreground,
+                          cursor: theme.cursor,
+                          cursorAccent: theme.cursorAccent,
+                          selectionBackground: theme.selectionBackground,
+                          black: theme.black,
+                          red: theme.red,
+                          green: theme.green,
+                          yellow: theme.yellow,
+                          blue: theme.blue,
+                          magenta: theme.magenta,
+                          cyan: theme.cyan,
+                          white: theme.white,
+                          brightBlack: theme.brightBlack,
+                          brightRed: theme.brightRed,
+                          brightGreen: theme.brightGreen,
+                          brightYellow: theme.brightYellow,
+                          brightBlue: theme.brightBlue,
+                          brightMagenta: theme.brightMagenta,
+                          brightCyan: theme.brightCyan,
+                          brightWhite: theme.brightWhite,
+                        };
+                      }
+                      
+                      setShowThemePicker(false);
+                    }}
+                    style={{
+                      "background": theme.background,
+                      "border-color": currentTheme().id === theme.id ? theme.blue : theme.black,
+                    }}
+                  >
+                    <div class="tp-theme-name" style={{ "color": theme.foreground }}>
+                      {theme.name}
+                    </div>
+                    <div class="tp-theme-preview">
+                      <span style={{ "color": theme.red }}>█</span>
+                      <span style={{ "color": theme.green }}>█</span>
+                      <span style={{ "color": theme.yellow }}>█</span>
+                      <span style={{ "color": theme.blue }}>█</span>
+                      <span style={{ "color": theme.magenta }}>█</span>
+                      <span style={{ "color": theme.cyan }}>█</span>
+                    </div>
+                  </button>
+                )}
+              </For>
+            </div>
+          </div>
+        </div>
+      </Show>
     </div>
   );
 }

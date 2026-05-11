@@ -1,9 +1,17 @@
 import { createSignal } from "solid-js";
+import * as machineCache from "./machine-cache";
 
 export interface TerminalPrefs {
   fontFamily: string;
   fontSize: number;
   cursorBlink: boolean;
+  scrollbackLines: number;
+  autoRestoreWithinHours: number;
+}
+
+export interface CellDimensions {
+  width: number;
+  height: number;
 }
 
 const KEY = "termgrid.termPrefs";
@@ -30,6 +38,8 @@ const DEFAULT: TerminalPrefs = {
   fontFamily: "Cascadia Code",
   fontSize: 14,
   cursorBlink: true,
+  scrollbackLines: 10_000,
+  autoRestoreWithinHours: 4,
 };
 
 function load(): TerminalPrefs {
@@ -54,4 +64,33 @@ export function updatePrefs(patch: Partial<TerminalPrefs>) {
 export function fontStack(p: TerminalPrefs = prefs()): string {
   const chosen = p.fontFamily.includes(" ") ? `'${p.fontFamily}'` : p.fontFamily;
   return `${chosen}, ${FALLBACK_STACK}`;
+}
+
+/**
+ * Build cache key for cell dimensions: `font|size|dpr`
+ * Cell dimensions depend on font family, size, and device pixel ratio.
+ */
+function cellDimsCacheKey(p: TerminalPrefs = prefs()): string {
+  const dpr = window.devicePixelRatio || 1;
+  return `${p.fontFamily}|${p.fontSize}|${dpr}`;
+}
+
+/**
+ * Load cached cell dimensions for the current terminal preferences.
+ * Returns null if no cache exists for this font/size/dpr combo.
+ */
+export async function loadCachedCellDimensions(): Promise<CellDimensions | null> {
+  const key = cellDimsCacheKey();
+  const cache = await machineCache.get<Record<string, CellDimensions>>("cellDimensions");
+  return cache?.[key] ?? null;
+}
+
+/**
+ * Save cell dimensions to cache for the current terminal preferences.
+ */
+export async function saveCellDimensions(dims: CellDimensions): Promise<void> {
+  const key = cellDimsCacheKey();
+  const cache = await machineCache.get<Record<string, CellDimensions>>("cellDimensions") ?? {};
+  cache[key] = dims;
+  await machineCache.set("cellDimensions", cache);
 }
