@@ -414,6 +414,11 @@ mod macos {
 /// path-shaped values.
 ///
 /// Exported for testing; safe to use on all platforms.
+///
+/// Marked allow-dead-code on non-macOS lib builds: its only non-test call
+/// site lives inside `mod macos`, so rustc's lib-target pass on Linux/Win
+/// flags it as unused even though the test target uses it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn extract_macos_env_tokens(line: &str) -> Vec<String> {
     line.split_whitespace()
         .filter(|tok| {
