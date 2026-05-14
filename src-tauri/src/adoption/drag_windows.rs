@@ -40,10 +40,20 @@ lazy_static::lazy_static! {
     static ref DRAG_STATE: Arc<Mutex<DragState>> = Arc::new(Mutex::new(DragState::default()));
 }
 
+/// Newtype that lets us stash an `HWINEVENTHOOK` in a `Mutex`-guarded
+/// static. The handle is `!Send` in `windows = "0.58"` because it wraps
+/// a raw pointer, but the OS just treats it as an opaque identifier —
+/// installing on one thread and unhooking from another is well-defined.
+#[cfg(target_os = "windows")]
+struct SendHook(HWINEVENTHOOK);
+
+#[cfg(target_os = "windows")]
+unsafe impl Send for SendHook {}
+
 #[cfg(target_os = "windows")]
 #[derive(Default)]
 struct DragState {
-    hook: Option<HWINEVENTHOOK>,
+    hook: Option<SendHook>,
     last_terminal_pid: Option<u32>,
     pending_adoption_pid: Option<u32>,
 }
@@ -159,7 +169,7 @@ pub fn start_drag_monitor() -> Result<(), String> {
         if hook.is_invalid() {
             return Err("Failed to install Windows event hook".into());
         }
-        state.hook = Some(hook);
+        state.hook = Some(SendHook(hook));
     }
     Ok(())
 }
@@ -170,7 +180,7 @@ pub fn stop_drag_monitor() -> Result<(), String> {
     let mut state = DRAG_STATE.lock().map_err(|e| e.to_string())?;
     if let Some(hook) = state.hook.take() {
         unsafe {
-            UnhookWinEvent(hook);
+            UnhookWinEvent(hook.0);
         }
     }
     state.last_terminal_pid = None;
