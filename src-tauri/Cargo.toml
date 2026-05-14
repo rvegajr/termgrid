@@ -46,6 +46,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Memory",
     "Win32_Security",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Accessibility",
     "Wdk_System_Threading",
     "Wdk_Foundation",
 ] }

@@ -20,14 +20,15 @@
 
 #[cfg(target_os = "windows")]
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, WPARAM},
+    Foundation::HWND,
     System::Threading::{
-        GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW,
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
         PROCESS_QUERY_LIMITED_INFORMATION,
     },
+    UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
     UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowThreadProcessId, SetWinEventHook, UnhookWinEvent,
-        EVENT_SYSTEM_FOREGROUND, HWINEVENTHOOK, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+        GetWindowThreadProcessId, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
+        WINEVENT_SKIPOWNPROCESS,
     },
 };
 
@@ -123,10 +124,16 @@ fn query_process_name(pid: u32) -> Option<String> {
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buffer = [0u16; 260];
-        let mut size = buffer.len() as u32;
-        QueryFullProcessImageNameW(handle, 0, &mut buffer, &mut size).ok()?;
+        let mut size: u32 = buffer.len() as u32;
+        QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_FORMAT(0),
+            windows::core::PWSTR(buffer.as_mut_ptr()),
+            &mut size as *mut u32,
+        )
+        .ok()?;
         let path = String::from_utf16_lossy(&buffer[..size as usize]);
-        path.split('\\').last().map(|s| s.to_string())
+        path.split('\\').next_back().map(|s| s.to_string())
     }
 }
 
