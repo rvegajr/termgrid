@@ -333,3 +333,18 @@ export interface InstallPluginsResult {
 export async function installShellPlugins(): Promise<InstallPluginsResult> {
   return invoke("install_shell_plugins_cmd");
 }
+
+/** **v5 (Windows):** Start monitoring for drag-to-drop adoption events. */
+export async function startDragMonitor(): Promise<void> {
+  return invoke("start_drag_monitor_cmd");
+}
+
+/** **v5 (Windows):** Stop monitoring for drag events. */
+export async function stopDragMonitor(): Promise<void> {
+  return invoke("stop_drag_monitor_cmd");
+}
+
+/** **v5 (Windows):** Poll for pending drag-to-drop PIDs. Returns null if none. */
+export async function pollDragEvents(): Promise<number | null> {
+  return invoke("poll_drag_events_cmd");
+}

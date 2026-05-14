@@ -13,6 +13,7 @@ pub mod buffer_scrape;
 pub mod clipboard_capture;
 pub mod commands;
 pub mod discover;
+pub mod drag_windows;
 pub mod env_capture;
 pub mod frontmost;
 pub mod history;

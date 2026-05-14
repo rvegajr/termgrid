@@ -257,6 +257,7 @@ function App() {
   const [showCommandPalette, setShowCommandPalette] = createSignal(false);
   const [showAdoptionPicker, setShowAdoptionPicker] = createSignal(false);
   const [adoptionParentFilter, setAdoptionParentFilter] = createSignal<string | null>(null);
+  const [dragMonitorActive, setDragMonitorActive] = createSignal(false);
   const [showGlobalSearch, setShowGlobalSearch] = createSignal(false);
   const [showTemplateManager, setShowTemplateManager] = createSignal(false);
   const [shellProfilesList, setShellProfilesList] = createSignal<shellProfiles.ShellProfile[]>([]);
@@ -630,6 +631,35 @@ function App() {
     setShowAdoptionPicker(true);
   }
 
+  /**
+   * **v5 (Windows):** Start polling for drag events. When a terminal window
+   * is "dragged" (Alt+Tabbed) to TermGrid, auto-adopt the session.
+   */
+  function startDragPolling() {
+    const interval = setInterval(async () => {
+      if (!dragMonitorActive()) {
+        clearInterval(interval);
+        return;
+      }
+      const pid = await adoption.pollDragEvents();
+      if (pid) {
+        console.info(`Drag detected: adopting PID ${pid}`);
+        const sessions = await adoption.listAdoptableSessions();
+        const session = sessions.find((s) => s.pid === pid);
+        if (session) {
+          const snap = await adoption.snapshotSessionCached(pid);
+          await adoptSession(
+            session,
+            "new-tab",
+            snap?.ssh_target ? "ssh-reconnect" : "local-cwd",
+            snap,
+            { injectHistory: false, forwardEnvOverSsh: true },
+          );
+        }
+      }
+    }, 500); // Poll every 500ms
+  }
+
   const saveSessionAsTemplate = async (name: string, description: string) => {
     const template: Omit<sessionTemplates.SessionTemplate, "id" | "createdAt"> = {
       name,
@@ -822,6 +852,35 @@ function App() {
         } catch (err) {
           console.error("Failed to install shell plugins:", err);
           alert(`Failed to install shell plugins: ${err}`);
+        }
+      },
+    },
+    {
+      id: "toggle-drag-monitor",
+      name: dragMonitorActive() ? "Stop Drag Monitor" : "Start Drag Monitor (Windows)",
+      description: dragMonitorActive()
+        ? "Stop monitoring for drag-to-drop adoption"
+        : "Start monitoring for terminal windows dragged to TermGrid",
+      keywords: ["drag", "drop", "monitor", "windows", "adoption"],
+      action: async () => {
+        if (dragMonitorActive()) {
+          try {
+            await adoption.stopDragMonitor();
+            setDragMonitorActive(false);
+            console.info("Drag monitor stopped");
+          } catch (err) {
+            console.error("Failed to stop drag monitor:", err);
+          }
+        } else {
+          try {
+            await adoption.startDragMonitor();
+            setDragMonitorActive(true);
+            console.info("Drag monitor started — Alt+Tab between terminal and TermGrid to adopt");
+            startDragPolling();
+          } catch (err) {
+            console.error("Failed to start drag monitor:", err);
+            alert(`Drag monitoring is only supported on Windows: ${err}`);
+          }
         }
       },
     },

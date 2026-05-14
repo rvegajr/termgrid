@@ -4378,6 +4378,7 @@ version = "0.1.2"
 dependencies = [
  "chrono",
  "dirs-next",
+ "lazy_static",
  "mockall",
  "portable-pty",
  "regex",

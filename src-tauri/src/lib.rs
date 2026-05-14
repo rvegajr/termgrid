@@ -41,6 +41,9 @@ pub fn run() {
             adoption::commands::replay_env_in_cwd_cmd,
             adoption::commands::clipboard_capture_cmd,
             adoption::commands::install_shell_plugins_cmd,
+            adoption::commands::start_drag_monitor_cmd,
+            adoption::commands::stop_drag_monitor_cmd,
+            adoption::commands::poll_drag_events_cmd,
         ])
         .setup(|app| {
             // Apply cached window geometry before showing the window
