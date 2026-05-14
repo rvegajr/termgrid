@@ -311,10 +311,11 @@ pub fn install_shell_plugins_cmd() -> Result<super::plugin_installer::InstallRes
 }
 
 /**
- * **v5 (Windows/macOS):** Start monitoring for drag-to-drop adoption events.
+ * **v5 (Windows/macOS/Linux):** Start monitoring for drag-to-drop adoption events.
  * 
  * - Windows: Installs an event hook tracking foreground window changes
  * - macOS: Monitors window positions via Accessibility API (requires permissions)
+ * - Linux: Polls X11 mouse position and window-under-cursor (X11 only, not Wayland)
  * 
  * When a terminal window is dragged/switched to TermGrid, the PID is made
  * available via `poll_drag_events_cmd`.
@@ -337,14 +338,19 @@ pub fn start_drag_monitor_cmd() -> Result<(), String> {
         super::drag_macos::start_drag_monitor(bounds)
     }
     
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        super::drag_linux::start_drag_monitor()
+    }
+    
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         Err("Drag monitoring is not supported on this platform".into())
     }
 }
 
 /**
- * **v5 (Windows/macOS):** Stop monitoring for drag events.
+ * **v5 (Windows/macOS/Linux):** Stop monitoring for drag events.
  */
 #[tauri::command]
 pub fn stop_drag_monitor_cmd() -> Result<(), String> {
@@ -356,18 +362,22 @@ pub fn stop_drag_monitor_cmd() -> Result<(), String> {
     {
         super::drag_macos::stop_drag_monitor()
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        super::drag_linux::stop_drag_monitor()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         Ok(())
     }
 }
 
 /**
- * **v5 (Windows/macOS):** Poll for pending drag-to-drop adoption PIDs.
+ * **v5 (Windows/macOS/Linux):** Poll for pending drag-to-drop adoption PIDs.
  * 
  * Returns `Some(pid)` if a terminal window was "dragged" (focus-switched
- * on Windows, or physically dragged on macOS) to TermGrid since the last
- * poll. Returns `None` if no pending events.
+ * on Windows, physically dragged on macOS, or mouse-tracked on Linux X11)
+ * to TermGrid since the last poll. Returns `None` if no pending events.
  */
 #[tauri::command]
 pub fn poll_drag_events_cmd() -> Option<u32> {
@@ -379,7 +389,11 @@ pub fn poll_drag_events_cmd() -> Option<u32> {
     {
         super::drag_macos::poll_drag_events()
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        super::drag_linux::poll_drag_events()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         None
     }

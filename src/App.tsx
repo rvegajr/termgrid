@@ -860,8 +860,8 @@ function App() {
       name: dragMonitorActive() ? "Stop Drag Monitor" : "Start Drag Monitor",
       description: dragMonitorActive()
         ? "Stop monitoring for drag-to-drop adoption"
-        : "Start monitoring for terminal windows dragged to TermGrid (Windows/macOS)",
-      keywords: ["drag", "drop", "monitor", "windows", "macos", "adoption"],
+        : "Start monitoring for terminal windows dragged to TermGrid (Windows/macOS/Linux X11)",
+      keywords: ["drag", "drop", "monitor", "windows", "macos", "linux", "x11", "adoption"],
       action: async () => {
         if (dragMonitorActive()) {
           try {
