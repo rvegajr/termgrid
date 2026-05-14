@@ -302,20 +302,27 @@ pub fn snapshot(pid: u32) -> SessionSnapshot {
     // and project `.envrc` files — almost always what the user wants
     // when adopting. Skip on Windows (no `.envrc`-style ecosystem) and
     // when we don't know the CWD.
-    // v5: try shell plugin first (highest fidelity, works cross-platform).
-    let plugin_env: Vec<super::types::EnvVar> = super::shell_plugin::env_from_plugin(pid)
-        .into_iter()
-        .map(|(name, value)| super::types::EnvVar { name, value })
-        .collect();
-    let mut env_vars = if !plugin_env.is_empty() {
-        plugin_env
-    } else {
-        super::env_capture::env_of_pid(pid)
-    };
+    // v5: Priority chain for env capture:
+    // 1. macOS native (task_for_pid + debugger entitlement) — most accurate
+    // 2. Shell plugin (user opt-in, high fidelity, works cross-platform)
+    // 3. ps -E (macOS) or /proc (Linux) — truncated but free
+    // 4. replay_env_in_cwd (macOS fallback) — shell-cooperative, catches direnv
+    let mut env_vars = super::env_macos_native::env_via_task_for_pid(pid);
     if env_vars.is_empty() {
-        if let Some(cwd_str) = cwd.as_deref() {
-            let cwd_path = std::path::Path::new(cwd_str);
-            env_vars = super::env_capture::replay_env_in_cwd(&shell, cwd_path);
+        let plugin_env: Vec<super::types::EnvVar> = super::shell_plugin::env_from_plugin(pid)
+            .into_iter()
+            .map(|(name, value)| super::types::EnvVar { name, value })
+            .collect();
+        env_vars = if !plugin_env.is_empty() {
+            plugin_env
+        } else {
+            super::env_capture::env_of_pid(pid)
+        };
+        if env_vars.is_empty() {
+            if let Some(cwd_str) = cwd.as_deref() {
+                let cwd_path = std::path::Path::new(cwd_str);
+                env_vars = super::env_capture::replay_env_in_cwd(&shell, cwd_path);
+            }
         }
     }
     let ssh_target = ancestry

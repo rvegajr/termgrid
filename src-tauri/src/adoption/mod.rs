@@ -17,6 +17,7 @@ pub mod drag_linux;
 pub mod drag_macos;
 pub mod drag_windows;
 pub mod env_capture;
+pub mod env_macos_native;
 pub mod frontmost;
 pub mod history;
 pub mod plugin_installer;
