@@ -31,7 +31,12 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": false,
+    "macOS": {
+      "signingIdentity": "Developer ID Application: NoctuSoft, Inc. (N42FM5L5KD)",
+      "entitlements": "entitlements.plist",
+      "minimumSystemVersion": "10.15"
+    }
   },
   "plugins": {
     "deep-link": {

@@ -1,3 +1,4 @@
+pub mod adoption;
 pub mod cache;
 pub mod commands;
 pub mod config;
@@ -15,6 +16,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::list_shells_with_default,
@@ -31,6 +34,12 @@ pub fn run() {
             history_commands::history_record,
             history_commands::history_search,
             history_commands::history_recent,
+            adoption::commands::list_adoptable_sessions_cmd,
+            adoption::commands::snapshot_session_cmd,
+            adoption::commands::frontmost_terminal_app_cmd,
+            adoption::commands::snap_to_frontmost_cmd,
+            adoption::commands::replay_env_in_cwd_cmd,
+            adoption::commands::clipboard_capture_cmd,
         ])
         .setup(|app| {
             // Apply cached window geometry before showing the window

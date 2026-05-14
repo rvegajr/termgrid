@@ -11,6 +11,12 @@
     "opener:allow-open-path",
     "opener:allow-reveal-item-in-dir",
     "opener:allow-open-url",
-    "deep-link:default"
+    "deep-link:default",
+    "dialog:default",
+    "dialog:allow-save",
+    "dialog:allow-open",
+    "fs:default",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file"
   ]
 }

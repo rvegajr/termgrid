@@ -57,6 +57,9 @@ import { attachMeta, detachMeta, feedRaw, paneMetaMap } from "./services/pane-me
 import { attachRecorder, detachRecorder, feedHistoryRaw } from "./services/history";
 import { PaneLabel } from "./components/PaneLabel";
 import { CommandPalette, type Command } from "./components/CommandPalette";
+import { AdoptionPicker } from "./components/AdoptionPicker";
+import * as adoption from "./services/adoption";
+import * as adoptionMemory from "./services/adoption-memory";
 import { GlobalSearch } from "./components/GlobalSearch";
 import { TemplateManager } from "./components/TemplateManager";
 import * as sessionTemplates from "./services/session-templates";
@@ -241,11 +244,19 @@ function App() {
   const [mruShellPath, setMruShellPath] = createSignal<string | null>(null);
   const [pinnedDirsList, setPinnedDirsList] = createSignal<pinnedDirs.PinnedDir[]>([]);
   const [recentCwdsList, setRecentCwdsList] = createSignal<recentCwds.RecentCwd[]>([]);
+  // v4: distinct row of previously-adopted dirs sourced from persisted
+  // adoption memory. Refreshed when the welcome screen mounts and after
+  // every adoption (so the user immediately sees their action stick).
+  const [previouslyAdoptedCwds, setPreviouslyAdoptedCwds] = createSignal<string[]>(
+    adoptionMemory.recentAdoptedCwds(5),
+  );
   const [showAutoRestoreBanner, setShowAutoRestoreBanner] = createSignal(false);
   const [welcomeShellIndex, setWelcomeShellIndex] = createSignal(0);
   const [draggedTabId, setDraggedTabId] = createSignal<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = createSignal<string | null>(null);
   const [showCommandPalette, setShowCommandPalette] = createSignal(false);
+  const [showAdoptionPicker, setShowAdoptionPicker] = createSignal(false);
+  const [adoptionParentFilter, setAdoptionParentFilter] = createSignal<string | null>(null);
   const [showGlobalSearch, setShowGlobalSearch] = createSignal(false);
   const [showTemplateManager, setShowTemplateManager] = createSignal(false);
   const [shellProfilesList, setShellProfilesList] = createSignal<shellProfiles.ShellProfile[]>([]);
@@ -404,6 +415,219 @@ function App() {
       e.preventDefault();
       setShowTemplateManager(prev => !prev);
     }
+    // Ctrl+Shift+A: adopt session picker.
+    // Ctrl+Shift+Alt+A (v4): "snap to frontmost" — one-shot adoption.
+    if (e.ctrlKey && e.shiftKey && (e.key === "A" || e.key === "a")) {
+      e.preventDefault();
+      if (e.altKey) {
+        snapToFrontmost();
+      } else {
+        setShowAdoptionPicker((prev) => !prev);
+      }
+    }
+  }
+
+  /**
+   * Pull a discovered external shell into a new TermGrid pane.
+   *
+   * v3 contract:
+   *  - `mode` — `"new-tab"` (default), `"active-pane"` (cd the focused
+   *    pane), or `"split"` (add to active tab).
+   *  - `strategy` — `"local-cwd"` (v1 cd-based) or `"ssh-reconnect"`
+   *    (run `ssh user@host` so the user resumes the *remote* shell).
+   *  - `snapshot` — may be pre-fetched by the picker. `null` means fetch.
+   *  - `options.injectHistory` — when true, write each `recent_history`
+   *    line into the new PTY (as comments) so TermGrid's Ctrl-R recall
+   *    surfaces them. Opt-in because it pollutes the local history.
+   *  - `options.forwardEnvOverSsh` — when reconnecting via SSH, append
+   *    `-o SendEnv=NAME` flags so allow-listed env vars survive the hop.
+   *
+   * Every branch surfaces a `# adopted …` banner so the user sees what
+   * happened, and records the adopted CWD into the recent-CWDs service
+   * so the welcome-screen pinned-dir picker stays useful across days.
+   */
+  async function adoptSession(
+    s: adoption.AdoptableSession,
+    mode: adoption.AdoptionMode = "new-tab",
+    strategy: adoption.AdoptionStrategy = "local-cwd",
+    preloadedSnap: adoption.SessionSnapshot | null = null,
+    options: { injectHistory?: boolean; forwardEnvOverSsh?: boolean } = {},
+  ) {
+    let snap: adoption.SessionSnapshot;
+    if (preloadedSnap && preloadedSnap.pid === s.pid) {
+      snap = preloadedSnap;
+    } else {
+      try {
+        snap = await adoption.snapshotSessionCached(s.pid);
+      } catch (err) {
+        console.error("snapshotSession failed:", err);
+        snap = {
+          pid: s.pid,
+          shell: s.shell,
+          cwd: s.cwd,
+          tty: s.tty,
+          recent_history: [],
+          banner: `adopted (${s.shell}, pid ${s.pid})`,
+          buffer_preview: null,
+          env_vars: [],
+          ssh_target: null,
+        };
+      }
+    }
+
+    // v3: forward the adopted CWD into recent-cwds so it shows up on the
+    // welcome screen. Best-effort — never blocks adoption.
+    if (snap.cwd) {
+      recentCwds.recordCwd(snap.cwd).catch(() => {});
+    }
+    // v4: log the adoption into persisted memory so the welcome screen
+    // can offer "Reopen previously adopted dirs" later. We store only
+    // *names* of env vars (never values) to keep the persisted blob
+    // free of secrets even if the allow-list ever loosens.
+    adoptionMemory.recordAdoption({
+      adoptedAt: Date.now(),
+      shell: snap.shell,
+      cwd: snap.cwd,
+      parent: s.parent,
+      envNames: snap.env_vars.map((e) => e.name),
+      mode,
+    });
+    setPreviouslyAdoptedCwds(adoptionMemory.recentAdoptedCwds(5));
+
+    // Build seed commands per strategy. Each command is written to the
+    // PTY after the shell prompt initializes, in order.
+    const seed: string[] = [`# ${snap.banner}`];
+    if (strategy === "ssh-reconnect" && snap.ssh_target) {
+      // Export env locally (so SendEnv has values to forward) then ssh.
+      if (options.forwardEnvOverSsh) {
+        for (const ev of snap.env_vars) {
+          const safeValue = ev.value.replace(/'/g, "'\\''");
+          seed.push(`export ${ev.name}='${safeValue}'`);
+        }
+      }
+      const sendEnv = options.forwardEnvOverSsh
+        ? snap.env_vars.map((v) => v.name)
+        : [];
+      seed.push(adoption.renderSshReconnect(snap.ssh_target, sendEnv));
+    } else {
+      // Local CWD strategy — forward toolchain env vars before any `cd`
+      // so direnv/asdf-style hooks see them on first activation.
+      for (const ev of snap.env_vars) {
+        const safeValue = ev.value.replace(/'/g, "'\\''");
+        seed.push(`export ${ev.name}='${safeValue}'`);
+      }
+    }
+
+    // History injection: write each entry as a shell comment so it lands
+    // in the local shell's history (Ctrl-R surfaces them) but does not
+    // execute. Last 8 entries by default — enough to bridge context, not
+    // so many that we drown the user's own history.
+    if (options.injectHistory && snap.recent_history.length > 0) {
+      for (const cmd of snap.recent_history.slice(-8)) {
+        const oneLine = cmd.replace(/[\r\n]+/g, " ").trim();
+        if (oneLine) seed.push(`# adopt-recall: ${oneLine}`);
+      }
+    }
+
+    const cwd = strategy === "ssh-reconnect" ? undefined : snap.cwd ?? undefined;
+
+    if (mode === "new-tab") {
+      await addPaneToNewTab(undefined, cwd, seed);
+      return;
+    }
+
+    if (mode === "active-pane") {
+      const fid = focusedPaneId();
+      const pane = panes().find((p) => p.id === fid);
+      if (!pane) {
+        await addPaneToNewTab(undefined, cwd, seed);
+        return;
+      }
+      const lines = [...seed];
+      if (cwd) {
+        lines.unshift(`cd ${cwd}`);
+      }
+      for (const line of lines) {
+        await ipc.writePane(pane.backendId, line + "\n");
+      }
+      return;
+    }
+
+    if (mode === "split") {
+      const tabId = activeTabId();
+      if (!tabId) {
+        await addPaneToNewTab(undefined, cwd, seed);
+        return;
+      }
+      const pane = await createPaneState(undefined, { cwd });
+      setPanes((prev) => [...prev, pane]);
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.id === tabId ? { ...t, paneIds: [...t.paneIds, pane.id] } : t,
+        ),
+      );
+      setTimeout(() => {
+        for (const cmd of seed) {
+          ipc.writePane(pane.backendId, cmd + "\n");
+        }
+      }, 500);
+      return;
+    }
+  }
+
+  /**
+   * **v3:** Open the adoption picker pre-filtered to the user's
+   * currently-frontmost terminal app. If no app is detected we fall
+   * back to the unfiltered picker.
+   */
+  async function openAdoptionPickerForFrontmost() {
+    try {
+      const host = await adoption.frontmostTerminalApp();
+      setAdoptionParentFilter(host);
+    } catch {
+      setAdoptionParentFilter(null);
+    }
+    setShowAdoptionPicker(true);
+  }
+
+  /**
+   * **v4:** "Snap to frontmost" — the practical drag-from-OS-window
+   * equivalent that works without Accessibility entitlements.
+   *
+   * Behavior tiers (mirrors `SnapResult`):
+   *   - `none` — show a toast with the reason; do nothing else.
+   *   - `one` — adopt immediately into a new tab (the canonical
+   *     drag-replacement intent: "I want this shell, here, now").
+   *   - `multiple` — open the picker pre-filtered to the source app.
+   */
+  async function snapToFrontmost() {
+    let res: adoption.SnapResult;
+    try {
+      res = await adoption.snapToFrontmost();
+    } catch (err) {
+      console.error("snapToFrontmost failed:", err);
+      return;
+    }
+    if (res.kind === "none") {
+      // Light-weight signal — surfaced via existing console; the picker
+      // would be heavier UX than the user expects from a single hotkey.
+      console.info("Snap to frontmost:", res.reason);
+      return;
+    }
+    if (res.kind === "one") {
+      adoption.rememberSnapshot(res.snapshot.pid, res.snapshot);
+      await adoptSession(
+        res.session,
+        "new-tab",
+        res.snapshot.ssh_target ? "ssh-reconnect" : "local-cwd",
+        res.snapshot,
+        { injectHistory: false, forwardEnvOverSsh: true },
+      );
+      return;
+    }
+    // res.kind === "multiple"
+    setAdoptionParentFilter(res.host);
+    setShowAdoptionPicker(true);
   }
 
   const saveSessionAsTemplate = async (name: string, description: string) => {
@@ -528,6 +752,59 @@ function App() {
       description: "Switch terminal color theme",
       keywords: ["colors", "appearance", "style"],
       action: () => setShowThemePicker(true),
+    },
+    {
+      id: "adopt-session",
+      name: "Adopt Session\u2026",
+      description: "Pull an external shell into a new TermGrid pane",
+      keywords: ["import", "attach", "external", "terminal", "shell", "pid"],
+      action: () => {
+        setAdoptionParentFilter(null);
+        setShowAdoptionPicker(true);
+      },
+    },
+    {
+      id: "adopt-frontmost",
+      name: "Adopt Frontmost Terminal\u2026",
+      description:
+        "Open the picker pre-filtered to the currently focused terminal app",
+      keywords: ["import", "frontmost", "active", "current", "focused"],
+      action: () => openAdoptionPickerForFrontmost(),
+    },
+    {
+      id: "snap-to-frontmost",
+      name: "Snap to Frontmost Terminal",
+      description:
+        "Adopt the frontmost terminal's most recent shell into a new tab in one step",
+      keywords: ["snap", "drag", "import", "frontmost", "instant"],
+      action: () => snapToFrontmost(),
+    },
+    {
+      id: "export-adoption-history",
+      name: "Export Adoption History…",
+      description: "Save your adoption memory to a JSON file",
+      keywords: ["export", "backup", "save", "adoption", "history"],
+      action: async () => {
+        const ok = await adoptionMemory.exportAdoptionMemory();
+        if (ok) {
+          console.info("Adoption history exported successfully");
+        }
+      },
+    },
+    {
+      id: "import-adoption-history",
+      name: "Import Adoption History…",
+      description: "Load adoption memory from a JSON file",
+      keywords: ["import", "restore", "load", "adoption", "history"],
+      action: async () => {
+        const count = await adoptionMemory.importAdoptionMemory();
+        if (count > 0) {
+          console.info(`Imported ${count} adoption entries`);
+          setPreviouslyAdoptedCwds(adoptionMemory.recentAdoptedCwds(5));
+        } else if (count === 0) {
+          console.info("No new entries to import");
+        }
+      },
     },
   ];
 
@@ -1351,6 +1628,32 @@ function App() {
                 </div>
               </Show>
 
+              {/* v4: previously-adopted directories. Distinct from
+                  "recent CWDs" because adoption is intentional — the user
+                  said "this dir is one I work in elsewhere too" — so it
+                  deserves its own row. */}
+              <Show when={previouslyAdoptedCwds().length > 0}>
+                <div class="welcome-divider"><span>previously adopted</span></div>
+                <div class="welcome-pinned-dirs">
+                  <For each={previouslyAdoptedCwds()}>
+                    {(path) => {
+                      const displayName = recentCwds.pathBaseName(path);
+                      return (
+                        <button
+                          class="pinned-dir-btn recent"
+                          onClick={() => addPaneToNewTab(undefined, path)}
+                          title={`Adopted previously: ${path}`}
+                        >
+                          <span class="pd-icon">\u21AA</span>
+                          <span class="pd-name">{displayName}</span>
+                          <span class="pd-path">{path}</span>
+                        </button>
+                      );
+                    }}
+                  </For>
+                </div>
+              </Show>
+
               <div class="welcome-tips">
                 <kbd>Ctrl+T</kbd> new tab · <kbd>Ctrl+N</kbd> split · <kbd>Ctrl+R</kbd> history
               </div>
@@ -1440,6 +1743,20 @@ function App() {
         <CommandPalette
           commands={paletteCommands()}
           onClose={() => setShowCommandPalette(false)}
+        />
+      </Show>
+
+      {/* Adoption Picker */}
+      <Show when={showAdoptionPicker()}>
+        <AdoptionPicker
+          onClose={() => {
+            setShowAdoptionPicker(false);
+            setAdoptionParentFilter(null);
+          }}
+          initialParentFilter={adoptionParentFilter()}
+          onPick={(s, mode, strategy, snap, options) =>
+            adoptSession(s, mode, strategy, snap, options)
+          }
         />
       </Show>
 
