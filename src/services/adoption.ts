@@ -358,3 +358,17 @@ export async function checkAccessibilityPermission(): Promise<boolean> {
 export async function requestAccessibilityPermission(): Promise<void> {
   return invoke("request_accessibility_permission_cmd");
 }
+
+/**
+ * **v5:** Where a pane currently "thinks it is" — local, or remoted via
+ * ssh/mosh. Mirrors `commands::RemoteContext` (tagged union, kebab-case).
+ */
+export type RemoteContext =
+  | { kind: "local"; host: string }
+  | { kind: "ssh"; destination: string; host: string; port: number | null };
+
+export async function paneRemoteContext(
+  paneId: string,
+): Promise<RemoteContext | null> {
+  return invoke<RemoteContext | null>("pane_remote_context", { paneId });
+}

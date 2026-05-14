@@ -34,9 +34,9 @@ fn history_path(shell: &str) -> Option<PathBuf> {
         "fish" => Some(home.join(".local/share/fish/fish_history")),
         "ksh" => Some(home.join(".ksh_history")),
         "tcsh" => Some(home.join(".history")),
-        "pwsh" | "powershell" => Some(
-            home.join(".local/share/powershell/PSReadLine/ConsoleHost_history.txt"),
-        ),
+        "pwsh" | "powershell" => {
+            Some(home.join(".local/share/powershell/PSReadLine/ConsoleHost_history.txt"))
+        }
         _ => None,
     }
 }
@@ -82,10 +82,16 @@ fn history_path_for_pid(pid: u32) -> Option<PathBuf> {
 /// Used only by [`history_path_for_pid`] — kept local because the
 /// expansion semantics ("only at the start of the path") are deliberate.
 fn expand_tilde(s: &str) -> String {
+    match dirs_next::home_dir() {
+        Some(home) => expand_tilde_with(&home, s),
+        None => s.to_string(),
+    }
+}
+
+/// Pure helper used by tests: expand `~/...` against a caller-supplied home.
+fn expand_tilde_with(home: &std::path::Path, s: &str) -> String {
     if let Some(rest) = s.strip_prefix("~/") {
-        if let Some(home) = dirs_next::home_dir() {
-            return home.join(rest).to_string_lossy().into_owned();
-        }
+        return home.join(rest).to_string_lossy().into_owned();
     }
     s.to_string()
 }
@@ -288,9 +294,13 @@ fn tail_history_at(path: &PathBuf, shell: &str, n: usize) -> Vec<String> {
 ///
 /// Used by the picker for the "Last" column. Never logs or panics.
 pub fn last_command_glimpse(shell: &str) -> Option<String> {
-    let mut last = tail_history(shell, 1).pop()?;
-    // Collapse internal whitespace so multi-line entries render on one row.
-    last = last.split_whitespace().collect::<Vec<_>>().join(" ");
+    format_glimpse(tail_history(shell, 1).pop()?)
+}
+
+/// Pure helper: collapse internal whitespace and truncate to ~80 chars.
+/// Exported for unit tests to bypass the filesystem.
+fn format_glimpse(raw: String) -> Option<String> {
+    let mut last = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     if last.len() > 80 {
         last.truncate(80);
         last.push('…');
@@ -305,12 +315,6 @@ pub fn last_command_glimpse(shell: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Serialize every test that mutates `HOME`. Without this they race
-    /// when `cargo test` runs them in parallel and we observe a wrong
-    /// glimpse / parse failure on whichever loses the race.
-    static HOME_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn parses_zsh_extended_format() {
@@ -349,30 +353,24 @@ mod tests {
 
     #[test]
     fn missing_file_returns_empty() {
-        assert_eq!(tail_history("nonexistent-shell-xyz", 10), Vec::<String>::new());
+        assert_eq!(
+            tail_history("nonexistent-shell-xyz", 10),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
     fn expand_tilde_expands_leading_only() {
-        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let saved = std::env::var_os("HOME");
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", dir.path());
-
-        let home_str = dir.path().to_string_lossy().to_string();
+        let home = dir.path();
+        let home_str = home.to_string_lossy().to_string();
         assert_eq!(
-            expand_tilde("~/foo"),
+            expand_tilde_with(home, "~/foo"),
             format!("{}/foo", home_str.trim_end_matches('/')),
         );
         // Embedded `~` is left alone — only leading `~/` expands.
-        assert_eq!(expand_tilde("/a/~/b"), "/a/~/b");
-        assert_eq!(expand_tilde("/absolute/path"), "/absolute/path");
-
-        if let Some(h) = saved {
-            std::env::set_var("HOME", h);
-        } else {
-            std::env::remove_var("HOME");
-        }
+        assert_eq!(expand_tilde_with(home, "/a/~/b"), "/a/~/b");
+        assert_eq!(expand_tilde_with(home, "/absolute/path"), "/absolute/path");
     }
 
     #[test]
@@ -387,25 +385,21 @@ mod tests {
 
     #[test]
     fn glimpse_collapses_whitespace_and_truncates() {
-        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Build a fake history file in a temp dir, then point HOME at it.
-        let dir = tempfile::tempdir().unwrap();
-        let zsh_path = dir.path().join(".zsh_history");
         let long = "a".repeat(200);
-        std::fs::write(&zsh_path, format!(": 1:0;short cmd\n: 2:0;{}\n", long)).unwrap();
-
-        // Override HOME for the duration of this test.
-        let saved = std::env::var_os("HOME");
-        std::env::set_var("HOME", dir.path());
-
-        let g = last_command_glimpse("zsh").unwrap();
+        let g = format_glimpse(long).unwrap();
         assert!(g.ends_with('…'), "long entry should be truncated: {}", g);
         assert!(g.len() <= 84);
+    }
 
-        if let Some(h) = saved {
-            std::env::set_var("HOME", h);
-        } else {
-            std::env::remove_var("HOME");
-        }
+    #[test]
+    fn glimpse_collapses_internal_whitespace() {
+        let g = format_glimpse("foo  bar\n  baz".to_string()).unwrap();
+        assert_eq!(g, "foo bar baz");
+    }
+
+    #[test]
+    fn glimpse_empty_returns_none() {
+        assert!(format_glimpse(String::new()).is_none());
+        assert!(format_glimpse("   \n  ".into()).is_none());
     }
 }

@@ -1,29 +1,34 @@
-//! **v5:** macOS drag-from-OS-window adoption via Accessibility API.
+//! **v5:** macOS drag-from-OS-window adoption.
 //!
-//! Monitors terminal window positions and detects when they're dragged over
-//! TermGrid. When a terminal window overlaps TermGrid's bounds for >500ms,
-//! we extract the PID and trigger adoption.
+//! True drag-rect detection on macOS requires walking the Accessibility tree
+//! every frame, which is expensive and needs Accessibility entitlement. The
+//! pragmatic equivalent — and what Windows already does — is to detect the
+//! foreground-app transition: terminal in front, then TermGrid in front. We
+//! treat that pair as a "drag-to-drop" proxy.
 //!
-//! **Requirements:**
-//! - Accessibility permissions granted to TermGrid (user must approve in
-//!   System Preferences → Security & Privacy → Privacy → Accessibility)
-//! - App must be signed with a Developer ID certificate
+//! `AXIsProcessTrusted()` is still surfaced so the UI can correctly tell the
+//! user when the upgraded (window-position) path would be available.
 //!
-//! **Architecture:**
-//! 1. `check_accessibility_permission()` — check if granted
-//! 2. `request_accessibility_permission()` — prompt user for grant
-//! 3. `start_drag_monitor()` — spawn background thread monitoring window positions
-//! 4. `poll_drag_events()` — frontend polls for detected PIDs
-//! 5. `stop_drag_monitor()` — stop monitoring
+//! Architecture:
+//! 1. `check_accessibility_permission()` — real `AXIsProcessTrusted` call.
+//! 2. `request_accessibility_permission()` — opens System Preferences.
+//! 3. `start_drag_monitor(_)` — spawn polling thread (NSWorkspace via
+//!    AppleScript, ~250 ms cadence) that watches frontmost-app changes.
+//! 4. `poll_drag_events()` — frontend polls for detected shell PIDs.
+//! 5. `stop_drag_monitor()` — stop the poller.
 
-#[cfg(target_os = "macos")]
-use core_graphics::display::CGRect;
 #[cfg(target_os = "macos")]
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "macos")]
 use std::thread;
 #[cfg(target_os = "macos")]
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn AXIsProcessTrusted() -> bool;
+}
 
 #[cfg(target_os = "macos")]
 lazy_static::lazy_static! {
@@ -34,47 +39,63 @@ lazy_static::lazy_static! {
 #[derive(Default)]
 struct DragState {
     monitoring: bool,
+    /// PID of the last terminal-host app seen as frontmost. When TermGrid
+    /// becomes frontmost, this is converted to its youngest shell child.
+    last_terminal_pid: Option<u32>,
+    /// Timestamp of `last_terminal_pid`. We discard stale stash > 5s old
+    /// so an old terminal focus from before the user did other things
+    /// can't trigger a phantom adoption.
+    last_terminal_at: Option<Instant>,
     pending_adoption_pid: Option<u32>,
-    termgrid_bounds: Option<CGRect>,
 }
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)] // Used in production implementation, not in stub
-static TERMINAL_APPS: &[&str] = &[
-    "Terminal.app",
+const TERMINAL_APPS: &[&str] = &[
+    "Terminal",
     "iTerm2",
-    "Kitty",
+    "iTerm",
+    "kitty",
     "Alacritty",
     "Hyper",
     "Warp",
+    "WezTerm",
+    "Ghostty",
 ];
+
+#[cfg(target_os = "macos")]
+const STALE_MS: u128 = 5_000;
 
 /// Check if TermGrid has Accessibility permissions.
 ///
-/// **Stub:** In production, this would call `AXIsProcessTrusted()` from
-/// ApplicationServices framework. The full implementation requires FFI
-/// bindings like:
-/// ```c
-/// #import <ApplicationServices/ApplicationServices.h>
-/// bool AXIsProcessTrusted(void);
-/// ```
+/// Direct FFI to ApplicationServices framework's `AXIsProcessTrusted()`.
+/// Returns `true` once the user has approved TermGrid in
+/// System Settings → Privacy & Security → Accessibility.
 ///
-/// For now, this stub always returns `false` to demonstrate the permission
-/// flow. To implement properly:
-/// 1. Add `cocoa` or `core-foundation-sys` crate
-/// 2. Declare extern "C" function for AXIsProcessTrusted
-/// 3. Call it here
+/// We *still* call this even though the basic drag-by-foreground-switch
+/// path doesn't strictly require it — the upgraded path (true window-rect
+/// overlap detection) will, and surfacing the permission state lets the UI
+/// nudge the user accurately.
 #[cfg(target_os = "macos")]
 pub fn check_accessibility_permission() -> bool {
-    // Stub: always returns false until proper FFI bindings are added
-    false
+    unsafe { AXIsProcessTrusted() }
 }
 
-/// Request Accessibility permissions. Opens System Preferences to the
-/// Accessibility pane so the user can grant permissions manually.
+/// Request Accessibility permissions. Opens System Settings → Privacy &
+/// Security → Accessibility. (Modern macOS doesn't allow programmatic
+/// permission grant — the user has to flip the toggle themselves.)
 #[cfg(target_os = "macos")]
 pub fn request_accessibility_permission() -> Result<(), String> {
-    // Open System Preferences → Security & Privacy → Accessibility
+    // x-apple.systempreferences URL works on macOS 13+. Older versions fall
+    // back to the AppleScript path.
+    let url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
+    if std::process::Command::new("open")
+        .arg(url)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
     let script = r#"
         tell application "System Preferences"
             reveal anchor "Privacy_Accessibility" of pane id "com.apple.preference.security"
@@ -86,69 +107,105 @@ pub fn request_accessibility_permission() -> Result<(), String> {
         .arg(script)
         .output()
         .map_err(|e| format!("Failed to open System Preferences: {}", e))?;
-
     if !output.status.success() {
         return Err("Failed to open Accessibility preferences".into());
     }
     Ok(())
 }
 
-/// Start monitoring for drag-to-drop events. Spawns a background thread that
-/// polls window positions every 100ms.
+/// Read `(name, pid)` of the frontmost application via AppleScript.
+///
+/// Costs ~10–20 ms per call. Cheap enough to poll a few times a second.
+/// Returns `None` if the call fails or the result is malformed.
 #[cfg(target_os = "macos")]
-pub fn start_drag_monitor(termgrid_bounds: CGRect) -> Result<(), String> {
+fn frontmost_app() -> Option<(String, u32)> {
+    let script = r#"
+        tell application "System Events"
+            try
+                set p to first application process whose frontmost is true
+                return (name of p) & "|" & (unix id of p)
+            on error
+                return ""
+            end try
+        end tell
+    "#;
+    let out = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let mut it = line.splitn(2, '|');
+    let name = it.next()?.trim().to_string();
+    let pid: u32 = it.next()?.trim().parse().ok()?;
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, pid))
+}
+
+#[cfg(target_os = "macos")]
+fn is_terminal_app(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    TERMINAL_APPS.iter().any(|t| n == t.to_ascii_lowercase())
+}
+
+/// Start the foreground-transition poller.
+#[cfg(target_os = "macos")]
+pub fn start_drag_monitor() -> Result<(), String> {
     let mut state = DRAG_STATE.lock().map_err(|e| e.to_string())?;
     if state.monitoring {
-        return Ok(()); // Already monitoring
+        return Ok(());
     }
-
-    if !check_accessibility_permission() {
-        return Err("Accessibility permissions not granted. Please grant access in System Preferences → Security & Privacy → Privacy → Accessibility".into());
-    }
-
     state.monitoring = true;
-    state.termgrid_bounds = Some(termgrid_bounds);
-    drop(state); // Release lock before spawning thread
+    drop(state);
 
-    thread::spawn(move || {
-        // Main monitoring loop
-        loop {
-            thread::sleep(Duration::from_millis(100));
-
-            let state = match DRAG_STATE.lock() {
-                Ok(s) => s,
-                Err(_) => break,
-            };
-
-            if !state.monitoring {
-                break;
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(250));
+        let monitoring = DRAG_STATE.lock().map(|s| s.monitoring).unwrap_or(false);
+        if !monitoring {
+            break;
+        }
+        let Some((name, pid)) = frontmost_app() else {
+            continue;
+        };
+        let is_termgrid = name.eq_ignore_ascii_case("TermGrid");
+        let is_term = is_terminal_app(&name);
+        if is_term {
+            if let Ok(mut state) = DRAG_STATE.lock() {
+                state.last_terminal_pid = Some(pid);
+                state.last_terminal_at = Some(Instant::now());
             }
-            drop(state);
-
-            // Stub: In a production implementation, this loop would:
-            // 1. Call Accessibility API to enumerate all windows:
-            //    ```c
-            //    AXUIElementRef app = AXUIElementCreateApplication(pid);
-            //    CFArrayRef windows;
-            //    AXUIElementCopyAttributeValue(app, kAXWindowsAttribute, &windows);
-            //    ```
-            // 2. For each window, check:
-            //    - If it belongs to a terminal app (via CFBundleIdentifier)
-            //    - Get its position/size (kAXPositionAttribute, kAXSizeAttribute)
-            //    - Check if it overlaps termgrid_bounds
-            // 3. If overlap persists for >500ms, extract the PID of the
-            //    *shell process* inside that terminal (not the terminal PID).
-            //    This requires calling our existing `enumerate()` logic to
-            //    find shell children of the terminal process.
-            // 4. Mark that shell PID for adoption via:
-            //    ```rust
-            //    let mut state = DRAG_STATE.lock().unwrap();
-            //    state.pending_adoption_pid = Some(shell_pid);
-            //    ```
-            //
-            // For now, this is a no-op stub. The architecture is sound, but
-            // the FFI bindings are non-trivial. Real implementation would use
-            // the `cocoa` or `accessibility-sys` crate for proper bindings.
+        } else if is_termgrid {
+            // Snapshot the stashed terminal PID + age, drop the lock, then
+            // do the (potentially slow) sysinfo walk to find the shell
+            // child. Re-acquire the lock to publish the result.
+            let term_pid = match DRAG_STATE.lock() {
+                Ok(state) => {
+                    let fresh = state
+                        .last_terminal_at
+                        .map(|t| t.elapsed().as_millis() < STALE_MS)
+                        .unwrap_or(false);
+                    if fresh {
+                        state.last_terminal_pid
+                    } else {
+                        None
+                    }
+                }
+                Err(_) => None,
+            };
+            if let Some(term_pid) = term_pid {
+                let shell_pid =
+                    super::discover::youngest_shell_descendant(term_pid).unwrap_or(term_pid);
+                if let Ok(mut state) = DRAG_STATE.lock() {
+                    state.pending_adoption_pid = Some(shell_pid);
+                    state.last_terminal_pid = None;
+                    state.last_terminal_at = None;
+                }
+            }
         }
     });
 
@@ -161,7 +218,8 @@ pub fn stop_drag_monitor() -> Result<(), String> {
     let mut state = DRAG_STATE.lock().map_err(|e| e.to_string())?;
     state.monitoring = false;
     state.pending_adoption_pid = None;
-    state.termgrid_bounds = None;
+    state.last_terminal_pid = None;
+    state.last_terminal_at = None;
     Ok(())
 }
 
@@ -184,7 +242,7 @@ pub fn request_accessibility_permission() -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn start_drag_monitor(_bounds: core_graphics::display::CGRect) -> Result<(), String> {
+pub fn start_drag_monitor() -> Result<(), String> {
     Err("Drag monitoring is only supported on macOS".into())
 }
 

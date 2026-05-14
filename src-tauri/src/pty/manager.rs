@@ -148,6 +148,14 @@ impl PtyResizer for PtyManager {
     }
 }
 
+impl PtyIntrospect for PtyManager {
+    fn process_id(&self, pane_id: &PaneId) -> Option<u32> {
+        let handles = self.handles.lock().ok()?;
+        let handle = handles.get(pane_id)?;
+        handle.child.process_id()
+    }
+}
+
 impl PtyLifecycle for PtyManager {
     fn kill(&self, pane_id: &PaneId) -> Result<(), PtyError> {
         let mut handles = self.handles.lock().unwrap();

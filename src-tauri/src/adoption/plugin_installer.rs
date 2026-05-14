@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 use std::fs;
+use std::path::Path;
 
 const ZSH_PLUGIN: &str = include_str!("../../../shell-plugins/termgrid.zsh");
 const BASH_PLUGIN: &str = include_str!("../../../shell-plugins/termgrid.bash");
@@ -15,12 +16,21 @@ pub struct InstallResult {
     pub instructions: String,
 }
 
-/// Installs the shell plugins to `~/.termgrid/plugins/`. Returns paths and
-/// installation instructions for the user.
+/// Public entry — installs to the current user's home directory.
 pub fn install_plugins() -> Result<InstallResult, String> {
     let home = dirs_next::home_dir().ok_or("Could not determine home directory")?;
+    install_plugins_to(&home)
+}
+
+/// Installs the shell plugins under `<home>/.termgrid/plugins/`. Parameterized
+/// on the home directory so unit tests can use a temp path without mutating
+/// the global `$HOME` env var (which would race other tests in the same
+/// process — every `dirs_next::home_dir()` caller would see the temp path
+/// disappear when the TempDir drops).
+pub fn install_plugins_to(home: &Path) -> Result<InstallResult, String> {
     let plugins_dir = home.join(".termgrid").join("plugins");
-    fs::create_dir_all(&plugins_dir).map_err(|e| format!("Failed to create plugin directory: {}", e))?;
+    fs::create_dir_all(&plugins_dir)
+        .map_err(|e| format!("Failed to create plugin directory: {}", e))?;
 
     // Write each plugin file
     fs::write(plugins_dir.join("termgrid.zsh"), ZSH_PLUGIN)
@@ -66,43 +76,25 @@ For more details, see: {}/README.md"#,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use tempfile::TempDir;
-
-    // Serialize tests that mutate HOME
-    static HOME_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn installs_all_plugin_files() {
-        let _lock = HOME_LOCK.lock().unwrap();
-        let original_home = std::env::var("HOME").ok();
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("HOME", tmp.path());
-        let result = install_plugins().unwrap();
+        let result = install_plugins_to(tmp.path()).unwrap();
         assert!(result.success);
         assert!(tmp.path().join(".termgrid/plugins/termgrid.zsh").exists());
         assert!(tmp.path().join(".termgrid/plugins/termgrid.bash").exists());
         assert!(tmp.path().join(".termgrid/plugins/termgrid.fish").exists());
         assert!(tmp.path().join(".termgrid/plugins/README.md").exists());
-        // Restore original HOME
-        if let Some(h) = original_home {
-            std::env::set_var("HOME", h);
-        }
     }
 
     #[test]
     fn returns_instructions() {
-        let _lock = HOME_LOCK.lock().unwrap();
-        let original_home = std::env::var("HOME").ok();
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("HOME", tmp.path());
-        let result = install_plugins().unwrap();
+        let result = install_plugins_to(tmp.path()).unwrap();
         assert!(result.instructions.contains("source"));
         assert!(result.instructions.contains("termgrid.zsh"));
         assert!(result.instructions.contains("~/.zshrc"));
-        // Restore original HOME
-        if let Some(h) = original_home {
-            std::env::set_var("HOME", h);
-        }
     }
 }

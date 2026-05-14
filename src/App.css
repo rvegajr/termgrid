@@ -416,6 +416,21 @@ html, body, #root {
 .pl-branch { color: #a6e3a1; }
 .pl-shell { color: #89b4fa; opacity: 0.8; }
 .pl-sep { color: #585b70; }
+.pl-host {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+.pl-host.local {
+  color: #6c7086;
+  background: rgba(108, 112, 134, 0.12);
+}
+.pl-host.ssh {
+  color: #f9e2af;
+  background: rgba(249, 226, 175, 0.12);
+}
 .pl-source-dot {
   width: 5px; height: 5px; border-radius: 50%;
   margin-left: 4px; display: inline-block;

@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -20,9 +20,7 @@ struct PluginState {
     buffer_preview: String,
 }
 
-/// Returns the path to the plugin state file for the given PID, if it exists.
-fn plugin_state_path(pid: u32) -> Option<PathBuf> {
-    let home = dirs_next::home_dir()?;
+fn plugin_state_path_in(home: &Path, pid: u32) -> Option<PathBuf> {
     let path = home
         .join(".termgrid")
         .join("shell-state")
@@ -34,14 +32,12 @@ fn plugin_state_path(pid: u32) -> Option<PathBuf> {
     }
 }
 
-/// Reads the plugin state for the given PID. Returns `None` if the file
-/// doesn't exist, is stale (>60s old), or can't be parsed.
-fn read_plugin_state(pid: u32) -> Option<PluginState> {
-    let path = plugin_state_path(pid)?;
+fn read_plugin_state_in(home: &Path, pid: u32) -> Option<PluginState> {
+    let path = plugin_state_path_in(home, pid)?;
     let contents = std::fs::read_to_string(&path).ok()?;
     let state: PluginState = serde_json::from_str(&contents).ok()?;
 
-    // Staleness check: if the file is >60s old, treat it as abandoned
+    // Staleness check: if the file is >60s old, treat it as abandoned.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
@@ -56,25 +52,23 @@ fn read_plugin_state(pid: u32) -> Option<PluginState> {
 /// **v5:** Attempts to read environment variables from the shell plugin state.
 /// Returns an empty vec if the plugin isn't active for this PID.
 ///
-/// This is a high-priority source: it's more accurate than `ps -E` (which
-/// truncates on macOS) and doesn't require elevated permissions like
-/// `task_for_pid`.
+/// More accurate than `ps -E` (which truncates on macOS) and doesn't require
+/// elevated permissions.
 pub fn env_from_plugin(pid: u32) -> Vec<(String, String)> {
-    let state = match read_plugin_state(pid) {
-        Some(s) => s,
-        None => return vec![],
+    let Some(home) = dirs_next::home_dir() else {
+        return vec![];
     };
-    state.env.into_iter().collect()
+    match read_plugin_state_in(&home, pid) {
+        Some(s) => s.env.into_iter().collect(),
+        None => vec![],
+    }
 }
 
 /// **v5:** Attempts to read the buffer preview from the shell plugin state.
 /// Returns `None` if the plugin isn't active for this PID.
-///
-/// This is a fallback for hosts with no introspection API (e.g.,
-/// gnome-terminal on Wayland, or any terminal where AppleScript / tmux /
-/// qdbus aren't available).
 pub fn buffer_from_plugin(pid: u32) -> Option<String> {
-    let state = read_plugin_state(pid)?;
+    let home = dirs_next::home_dir()?;
+    let state = read_plugin_state_in(&home, pid)?;
     if state.buffer_preview.is_empty() {
         None
     } else {
@@ -86,12 +80,8 @@ pub fn buffer_from_plugin(pid: u32) -> Option<String> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempfile::TempDir;
-
-    // Serialize tests that mutate HOME to avoid cross-contamination
-    static HOME_LOCK: Mutex<()> = Mutex::new(());
 
     fn write_plugin_state(dir: &TempDir, pid: u32, timestamp: i64, env: &str, buffer: &str) {
         let state_dir = dir.path().join(".termgrid").join("shell-state");
@@ -110,92 +100,58 @@ mod tests {
         fs::write(state_dir.join(format!("{}.json", pid)), json).unwrap();
     }
 
+    fn now_secs() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
     #[test]
     fn returns_empty_when_file_missing() {
-        let _lock = HOME_LOCK.lock().unwrap();
-        let original_home = std::env::var("HOME").ok();
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("HOME", tmp.path());
-        let result = env_from_plugin(9999);
-        assert!(result.is_empty());
-        // Restore original HOME
-        if let Some(h) = original_home {
-            std::env::set_var("HOME", h);
-        }
+        assert!(read_plugin_state_in(tmp.path(), 9999).is_none());
     }
 
     #[test]
     fn reads_valid_plugin_state() {
-        let _lock = HOME_LOCK.lock().unwrap();
-        let original_home = std::env::var("HOME").ok();
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("HOME", tmp.path());
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        write_plugin_state(&tmp, 1234, now, r#""PATH":"/usr/bin","HOME":"/home/user""#, "ls -la");
-        let result = env_from_plugin(1234);
-        assert_eq!(result.len(), 2);
-        assert!(result.contains(&("PATH".into(), "/usr/bin".into())));
-        assert!(result.contains(&("HOME".into(), "/home/user".into())));
-        // Restore original HOME
-        if let Some(h) = original_home {
-            std::env::set_var("HOME", h);
-        }
+        write_plugin_state(
+            &tmp,
+            1234,
+            now_secs(),
+            r#""PATH":"/usr/bin","HOME":"/home/user""#,
+            "ls -la",
+        );
+        let state = read_plugin_state_in(tmp.path(), 1234).expect("state present");
+        assert_eq!(state.env.len(), 2);
+        assert_eq!(state.env.get("PATH"), Some(&"/usr/bin".to_string()));
+        assert_eq!(state.env.get("HOME"), Some(&"/home/user".to_string()));
     }
 
     #[test]
     fn ignores_stale_state() {
-        let _lock = HOME_LOCK.lock().unwrap();
-        let original_home = std::env::var("HOME").ok();
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("HOME", tmp.path());
-        let stale_timestamp = 1000; // ancient
-        write_plugin_state(&tmp, 1234, stale_timestamp, r#""PATH":"/usr/bin""#, "");
-        let result = env_from_plugin(1234);
-        assert!(result.is_empty(), "Stale state should be ignored");
-        // Restore original HOME
-        if let Some(h) = original_home {
-            std::env::set_var("HOME", h);
-        }
+        write_plugin_state(&tmp, 1234, 1000, r#""PATH":"/usr/bin""#, "");
+        assert!(
+            read_plugin_state_in(tmp.path(), 1234).is_none(),
+            "Stale state should be ignored"
+        );
     }
 
     #[test]
     fn reads_buffer_preview() {
-        let _lock = HOME_LOCK.lock().unwrap();
-        let original_home = std::env::var("HOME").ok();
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("HOME", tmp.path());
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        write_plugin_state(&tmp, 1234, now, "", "git status; git log");
-        let result = buffer_from_plugin(1234);
-        assert_eq!(result, Some("git status; git log".into()));
-        // Restore original HOME
-        if let Some(h) = original_home {
-            std::env::set_var("HOME", h);
-        }
+        write_plugin_state(&tmp, 1234, now_secs(), "", "git status; git log");
+        let state = read_plugin_state_in(tmp.path(), 1234).expect("state present");
+        assert_eq!(state.buffer_preview, "git status; git log");
     }
 
     #[test]
     fn returns_none_for_empty_buffer() {
-        let _lock = HOME_LOCK.lock().unwrap();
-        let original_home = std::env::var("HOME").ok();
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("HOME", tmp.path());
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        write_plugin_state(&tmp, 1234, now, r#""PATH":"/usr/bin""#, "");
-        let result = buffer_from_plugin(1234);
-        assert_eq!(result, None);
-        // Restore original HOME
-        if let Some(h) = original_home {
-            std::env::set_var("HOME", h);
-        }
+        write_plugin_state(&tmp, 1234, now_secs(), r#""PATH":"/usr/bin""#, "");
+        let state = read_plugin_state_in(tmp.path(), 1234).expect("state present");
+        assert!(state.buffer_preview.is_empty());
     }
 }

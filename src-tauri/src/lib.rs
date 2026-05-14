@@ -27,6 +27,7 @@ pub fn run() {
             commands::write_pane,
             commands::resize_pane,
             commands::close_pane,
+            commands::pane_remote_context,
             snapshot::snapshot_save,
             snapshot::snapshot_load,
             snapshot::snapshot_delete,

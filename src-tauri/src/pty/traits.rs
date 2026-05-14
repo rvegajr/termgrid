@@ -43,6 +43,15 @@ pub trait PtyLifecycle: Send + Sync {
     fn list_active(&self) -> Vec<PaneId>;
 }
 
+/// Read out-of-band info about a live PTY (currently just the child PID).
+///
+/// Used by the per-pane "where am I" badge to walk the shell's descendant
+/// process tree and detect when the user has SSHed into a remote host.
+#[cfg_attr(test, mockall::automock)]
+pub trait PtyIntrospect: Send + Sync {
+    fn process_id(&self, pane_id: &PaneId) -> Option<u32>;
+}
+
 /// Detect available shells on the system
 #[cfg_attr(test, mockall::automock)]
 pub trait ShellDetector: Send + Sync {

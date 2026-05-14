@@ -253,8 +253,7 @@ mod tests {
 
     #[test]
     fn skips_flag_with_arg() {
-        let t = parse_ssh_command_line("ssh -i /tmp/key.pem -L 8080:localhost:80 me@host")
-            .unwrap();
+        let t = parse_ssh_command_line("ssh -i /tmp/key.pem -L 8080:localhost:80 me@host").unwrap();
         assert_eq!(t.destination, "me@host");
     }
 
@@ -335,8 +334,7 @@ mod tests {
             command: None,
             argv: vec![],
         };
-        let out =
-            render_reconnect_command_with_send_env(&target, &["VIRTUAL_ENV", "AWS_PROFILE"]);
+        let out = render_reconnect_command_with_send_env(&target, &["VIRTUAL_ENV", "AWS_PROFILE"]);
         assert_eq!(
             out,
             "ssh -o SendEnv=VIRTUAL_ENV -o SendEnv=AWS_PROFILE me@host"

@@ -145,3 +145,69 @@ pub fn close_pane(state: State<AppState>, pane_id: String) -> Result<(), String>
         .kill(&pane_id)
         .map_err(|e| e.to_string())
 }
+
+/// Where a pane currently *thinks it is*: a local shell, or remoted into
+/// somewhere via ssh/mosh. Walks the PTY's child process tree and looks
+/// for an `ssh`/`mosh-client` descendant — if any, parses its argv to
+/// extract `user@host`. Otherwise reports the local short hostname.
+///
+/// Cheap: one sysinfo refresh + one `ps -o args=` per ssh hit. We expect
+/// the frontend to poll this on a few-second cadence per visible pane.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum RemoteContext {
+    /// Local shell. `host` is the machine's short hostname so the UI can
+    /// distinguish two TermGrid windows on different laptops at a glance.
+    Local { host: String },
+    /// User has SSHed (or mosh'd) into a remote host from this pane.
+    Ssh {
+        /// `user@host` or just `host`.
+        destination: String,
+        /// Short host portion (after any `user@`), for compact display.
+        host: String,
+        port: Option<u16>,
+    },
+}
+
+#[tauri::command]
+pub fn pane_remote_context(state: State<AppState>, pane_id: String) -> Option<RemoteContext> {
+    let shell_pid = state.pty_introspect.process_id(&pane_id)?;
+    let local_host = short_hostname();
+    if let Some(target) = crate::adoption::find_ssh_descendant(shell_pid) {
+        let dest = target.destination.clone();
+        let host_only = dest
+            .rsplit_once('@')
+            .map(|(_, h)| h.to_string())
+            .unwrap_or_else(|| dest.clone());
+        Some(RemoteContext::Ssh {
+            destination: dest,
+            host: host_only,
+            port: target.port,
+        })
+    } else {
+        Some(RemoteContext::Local { host: local_host })
+    }
+}
+
+/// Best-effort short hostname.
+///
+/// We strip the first `.` onward (so `foo.local` → `foo`, `mac.lan` → `mac`)
+/// since the badge has limited horizontal real estate and the full FQDN
+/// rarely adds signal on a personal machine.
+fn short_hostname() -> String {
+    let raw = std::process::Command::new("hostname")
+        .arg("-s")
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .unwrap_or_else(|| "local".to_string());
+    raw.split('.').next().unwrap_or(&raw).to_string()
+}

@@ -252,11 +252,14 @@ mod tests {
         // stub must always return None for both probes. Trivially true
         // by construction, but tested so the gate fails loudly if anyone
         // wires Windows code paths back through a non-cfg path.
-        assert_eq!(super::cwd_of_pid(1234), if cfg!(target_os = "windows") {
-            super::cwd_of_pid(1234)
-        } else {
-            None
-        });
+        assert_eq!(
+            super::cwd_of_pid(1234),
+            if cfg!(target_os = "windows") {
+                super::cwd_of_pid(1234)
+            } else {
+                None
+            }
+        );
         assert_eq!(super::tty_of_pid(1234), None);
     }
 }

@@ -4,9 +4,7 @@
 //! frontend's perspective. Discovery is fast (<100ms in practice) so we
 //! don't bother with async streaming for v1.
 
-use super::{
-    list_adoptable_sessions, snapshot_session, AdoptableSession, SessionSnapshot,
-};
+use super::{list_adoptable_sessions, snapshot_session, AdoptableSession, SessionSnapshot};
 
 /// List every shell process on the host that the user could plausibly
 /// adopt into a new TermGrid pane.
@@ -62,7 +60,11 @@ pub fn frontmost_terminal_app_cmd() -> Option<String> {
 pub fn snap_to_frontmost_cmd() -> SnapResult {
     let host = match super::frontmost::frontmost_terminal_app() {
         Some(h) => h,
-        None => return SnapResult::None { reason: "no frontmost terminal app detected".into() },
+        None => {
+            return SnapResult::None {
+                reason: "no frontmost terminal app detected".into(),
+            }
+        }
     };
     let all = list_adoptable_sessions();
     let host_lc = host.to_ascii_lowercase();
@@ -112,7 +114,9 @@ pub fn snap_to_frontmost_cmd() -> SnapResult {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum SnapResult {
-    None { reason: String },
+    None {
+        reason: String,
+    },
     One {
         host: String,
         session: AdoptableSession,
@@ -216,19 +220,13 @@ mod tests {
 
     #[test]
     fn dispatch_returns_none_when_no_matches() {
-        let res = dispatch(
-            "Terminal",
-            vec![sample_session(1, Some("iTerm2"), 1000)],
-        );
+        let res = dispatch("Terminal", vec![sample_session(1, Some("iTerm2"), 1000)]);
         assert!(matches!(res, SnapResult::None { .. }));
     }
 
     #[test]
     fn dispatch_returns_one_for_single_match() {
-        let res = dispatch(
-            "Terminal",
-            vec![sample_session(1, Some("Terminal"), 1000)],
-        );
+        let res = dispatch("Terminal", vec![sample_session(1, Some("Terminal"), 1000)]);
         match res {
             SnapResult::One { session, .. } => assert_eq!(session.pid, 1),
             other => panic!("expected One, got {:?}", other),
@@ -300,7 +298,7 @@ pub fn replay_env_in_cwd_cmd(shell: String, cwd: String) -> Vec<super::types::En
 
 /**
  * **v5:** Install TermGrid shell plugins to `~/.termgrid/plugins/`.
- * 
+ *
  * Returns installation instructions for the user. The plugins enable
  * cooperative adoption: shells voluntarily export their environment and
  * buffer state, eliminating the need for platform-specific introspection.
@@ -312,11 +310,11 @@ pub fn install_shell_plugins_cmd() -> Result<super::plugin_installer::InstallRes
 
 /**
  * **v5 (Windows/macOS/Linux):** Start monitoring for drag-to-drop adoption events.
- * 
+ *
  * - Windows: Installs an event hook tracking foreground window changes
  * - macOS: Monitors window positions via Accessibility API (requires permissions)
  * - Linux: Polls X11 mouse position and window-under-cursor (X11 only, not Wayland)
- * 
+ *
  * When a terminal window is dragged/switched to TermGrid, the PID is made
  * available via `poll_drag_events_cmd`.
  */
@@ -326,23 +324,17 @@ pub fn start_drag_monitor_cmd() -> Result<(), String> {
     {
         super::drag_windows::start_drag_monitor()
     }
-    
+
     #[cfg(target_os = "macos")]
     {
-        // In production, the frontend would pass actual window bounds.
-        // For now, use a placeholder rect.
-        let bounds = core_graphics::display::CGRect::new(
-            &core_graphics::geometry::CGPoint::new(0.0, 0.0),
-            &core_graphics::geometry::CGSize::new(1200.0, 800.0),
-        );
-        super::drag_macos::start_drag_monitor(bounds)
+        super::drag_macos::start_drag_monitor()
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         super::drag_linux::start_drag_monitor()
     }
-    
+
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         Err("Drag monitoring is not supported on this platform".into())
@@ -374,7 +366,7 @@ pub fn stop_drag_monitor_cmd() -> Result<(), String> {
 
 /**
  * **v5 (Windows/macOS/Linux):** Poll for pending drag-to-drop adoption PIDs.
- * 
+ *
  * Returns `Some(pid)` if a terminal window was "dragged" (focus-switched
  * on Windows, physically dragged on macOS, or mouse-tracked on Linux X11)
  * to TermGrid since the last poll. Returns `None` if no pending events.

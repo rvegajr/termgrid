@@ -90,7 +90,9 @@ fn is_ssh(name: &str) -> bool {
 }
 
 fn is_terminal_host(name: &str) -> bool {
-    TERMINAL_HOSTS.iter().any(|host| host.eq_ignore_ascii_case(name))
+    TERMINAL_HOSTS
+        .iter()
+        .any(|host| host.eq_ignore_ascii_case(name))
 }
 
 /// One pass of process-tree info, indexed for fast ancestry walks.
@@ -133,6 +135,25 @@ fn build_index(sys: &System) -> ProcessIndex {
         names,
         started,
     }
+}
+
+/// Given the PID of a terminal-host window (e.g. `WindowsTerminal.exe`,
+/// `Terminal.app`, `gnome-terminal`), find the youngest interactive-shell
+/// descendant. Used by the drag-to-pane handlers, which receive the host
+/// PID from the OS event but need a shell PID to feed `list_adoptable_sessions`.
+///
+/// Returns `None` when no shell is reachable from `host_pid` — the caller
+/// should fall back to "open empty pane" in that case.
+pub fn youngest_shell_descendant(host_pid: u32) -> Option<u32> {
+    let sys = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    );
+    let idx = build_index(&sys);
+    let desc = descendants_of(host_pid, &idx.children);
+    desc.into_iter()
+        .filter(|pid| *pid != host_pid)
+        .filter(|pid| idx.names.get(pid).map(|n| is_shell(n)).unwrap_or(false))
+        .max_by_key(|pid| idx.started.get(pid).copied().unwrap_or(0))
 }
 
 /// Compute the set of PIDs descended from `root_pid` (inclusive).
@@ -290,11 +311,8 @@ pub fn snapshot(pid: u32) -> SessionSnapshot {
     // v5: try shell plugin first for buffer, then fall back to AppleScript/tmux.
     let mut buffer_preview = super::shell_plugin::buffer_from_plugin(pid);
     if buffer_preview.is_none() {
-        buffer_preview = super::buffer_scrape::scrape(
-            pid,
-            ancestry.host.as_deref(),
-            tty.as_deref(),
-        );
+        buffer_preview =
+            super::buffer_scrape::scrape(pid, ancestry.host.as_deref(), tty.as_deref());
     }
     // v4: on macOS (and any host where direct env probe is denied) we
     // fall back to spawning a fresh shell in the candidate's CWD and
@@ -303,7 +321,7 @@ pub fn snapshot(pid: u32) -> SessionSnapshot {
     // when adopting. Skip on Windows (no `.envrc`-style ecosystem) and
     // when we don't know the CWD.
     // v5: Priority chain for env capture:
-    // 1. macOS native (task_for_pid + debugger entitlement) — most accurate
+    // 1. macOS native (KERN_PROCARGS2 sysctl) — full env block, no entitlement
     // 2. Shell plugin (user opt-in, high fidelity, works cross-platform)
     // 3. ps -E (macOS) or /proc (Linux) — truncated but free
     // 4. replay_env_in_cwd (macOS fallback) — shell-cooperative, catches direnv

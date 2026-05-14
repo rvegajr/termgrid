@@ -21,6 +21,7 @@ pub struct AppState {
     pub pty_reader: Arc<dyn PtyReader>,
     pub pty_resizer: Arc<dyn PtyResizer>,
     pub pty_lifecycle: Arc<dyn PtyLifecycle>,
+    pub pty_introspect: Arc<dyn PtyIntrospect>,
     pub shell_detector: Arc<dyn ShellDetector>,
     history: OnceLock<Arc<HistoryState>>,
     pub shell_cache: Arc<ShellCacheState>,
@@ -42,7 +43,8 @@ impl AppState {
             pty_writer: pty_manager.clone(),
             pty_reader: pty_manager.clone(),
             pty_resizer: pty_manager.clone(),
-            pty_lifecycle: pty_manager,
+            pty_lifecycle: pty_manager.clone(),
+            pty_introspect: pty_manager,
             shell_detector,
             history: OnceLock::new(),
             shell_cache: Arc::new(ShellCacheState {

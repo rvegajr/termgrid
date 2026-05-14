@@ -2,10 +2,7 @@
 // (we have no Windows env probe in v3), but they're still exercised by
 // unit tests on every host. Silence the dead-code warnings without
 // touching the cfg gating that controls the actual probe selection.
-#![cfg_attr(
-    not(any(target_os = "linux", target_os = "macos")),
-    allow(dead_code)
-)]
+#![cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 
 //! Capture a filtered slice of a foreign process's environment.
 //!
@@ -195,7 +192,10 @@ mod replay {
             }
         }
         // Fall back to bare name; std::process::Command will PATH-resolve.
-        if matches!(bare.as_str(), "zsh" | "bash" | "fish" | "ksh" | "tcsh" | "dash") {
+        if matches!(
+            bare.as_str(),
+            "zsh" | "bash" | "fish" | "ksh" | "tcsh" | "dash"
+        ) {
             Some(bare)
         } else {
             None
@@ -417,7 +417,9 @@ mod macos {
 pub(crate) fn extract_macos_env_tokens(line: &str) -> Vec<String> {
     line.split_whitespace()
         .filter(|tok| {
-            let Some(eq) = tok.find('=') else { return false };
+            let Some(eq) = tok.find('=') else {
+                return false;
+            };
             let name = &tok[..eq];
             if name.is_empty() {
                 return false;
@@ -426,8 +428,7 @@ pub(crate) fn extract_macos_env_tokens(line: &str) -> Vec<String> {
             if !(first.is_ascii_alphabetic() || first == b'_') {
                 return false;
             }
-            name.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
         })
         .map(|s| s.to_string())
         .collect()

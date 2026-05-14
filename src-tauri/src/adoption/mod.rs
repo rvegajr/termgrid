@@ -25,14 +25,59 @@ pub mod shell_plugin;
 pub mod ssh_parse;
 pub mod types;
 
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
-pub use types::{AdoptableSession, SessionSnapshot};
+pub use types::{AdoptableSession, SessionSnapshot, SshTarget};
+
+/// Walk the descendants of `root_pid` and return the parsed ssh/mosh target
+/// of the first ssh-family process found, if any. Used by the per-pane
+/// "where am I" badge: given a pane's shell PID, detect when the user has
+/// SSHed into a remote host.
+///
+/// Cheap (one sysinfo refresh + one `ps -o args=` on a hit). Returns `None`
+/// when no ssh descendant exists or argv parsing fails.
+pub fn find_ssh_descendant(root_pid: u32) -> Option<SshTarget> {
+    use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+    let sys = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    );
+    // Walk children via the System directly to avoid exposing discover internals.
+    let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+    let mut names: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
+    for (pid, proc) in sys.processes() {
+        let pid_u32 = pid.as_u32();
+        names.insert(pid_u32, proc.name().to_string_lossy().into_owned());
+        if let Some(ppid) = proc.parent() {
+            children.entry(ppid.as_u32()).or_default().push(pid_u32);
+        }
+    }
+    let mut stack = vec![root_pid];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(pid) = stack.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        if pid != root_pid {
+            if let Some(name) = names.get(&pid) {
+                let low = name.to_ascii_lowercase();
+                if low == "ssh" || low == "mosh" || low == "mosh-client" {
+                    if let Some(target) = ssh_parse::parse_ssh_for_pid(pid) {
+                        return Some(target);
+                    }
+                }
+            }
+        }
+        if let Some(kids) = children.get(&pid) {
+            stack.extend(kids.iter().copied());
+        }
+    }
+    None
+}
 
 /// Read the CWD of an arbitrary process by PID. Best-effort.
 ///

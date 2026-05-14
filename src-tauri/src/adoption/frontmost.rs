@@ -62,7 +62,11 @@ mod macos {
                 end try
             end tell
         "#;
-        let out = Command::new("osascript").arg("-e").arg(script).output().ok()?;
+        let out = Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .ok()?;
         if !out.status.success() {
             return None;
         }
@@ -146,8 +150,7 @@ mod windows {
             if pid == 0 {
                 return None;
             }
-            let handle: HANDLE =
-                OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+            let handle: HANDLE = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
             if handle.is_invalid() {
                 return None;
             }

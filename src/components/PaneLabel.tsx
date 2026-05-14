@@ -1,5 +1,6 @@
 import { Show, createSignal } from "solid-js";
 import { paneMetaMap } from "../services/pane-meta";
+import { paneHostMap } from "../services/pane-host";
 import { HelpTip } from "./HelpTip";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import * as pinnedDirs from "../services/pinned-dirs";
@@ -16,8 +17,9 @@ export function PaneLabel(props: Props) {
   const branch = () => meta()?.branch;
   const shell = () => meta()?.shell ?? props.shellHint;
   const source = () => meta()?.source ?? "init";
+  const host = () => paneHostMap()[props.paneId];
 
-  const visible = () => !!(cwd() || branch() || shell());
+  const visible = () => !!(cwd() || branch() || shell() || host());
   const dimmed = () => props.focused();
   const [isPinnedDir, setIsPinnedDir] = createSignal(false);
 
@@ -83,6 +85,16 @@ export function PaneLabel(props: Props) {
           badge={false}
         >
           <span class="pane-label-row">
+            <Show when={host()}>
+              <span class={`pl-host ${host()!.kind === "ssh" ? "ssh" : "local"}`}>
+                {host()!.kind === "ssh"
+                  ? `ssh → ${(host() as { kind: "ssh"; destination: string }).destination}`
+                  : (host() as { kind: "local"; host: string }).host}
+              </span>
+              <Show when={cwd() || branch() || shell()}>
+                <span class="pl-sep">·</span>
+              </Show>
+            </Show>
             <Show when={cwd()}>
               <span class="pl-cwd">{cwd()}</span>
               <button

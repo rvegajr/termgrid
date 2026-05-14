@@ -54,6 +54,7 @@ import {
   type SnapshotHandle,
 } from "./services/pane-snapshot";
 import { attachMeta, detachMeta, feedRaw, paneMetaMap } from "./services/pane-meta";
+import { refreshPaneHost, forgetPaneHost } from "./services/pane-host";
 import { attachRecorder, detachRecorder, feedHistoryRaw } from "./services/history";
 import { PaneLabel } from "./components/PaneLabel";
 import { CommandPalette, type Command } from "./components/CommandPalette";
@@ -378,6 +379,15 @@ function App() {
     window.addEventListener("beforeunload", () => {
       for (const p of panes()) p.snapshot.flush();
     });
+
+    // Per-pane "where am I" poller. Cheap — one sysinfo refresh + optional
+    // `ps -o args=` per ssh hit. Runs every 3s; we get an extra refresh
+    // right after spawn (`createPaneState`) so the first paint isn't blank.
+    setInterval(() => {
+      for (const p of panes()) {
+        refreshPaneHost(p.backendId).catch(() => {});
+      }
+    }, 3000);
   });
 
   function handleKeyDown(e: KeyboardEvent) {
@@ -682,6 +692,7 @@ function App() {
     for (const pane of panes()) {
       pane.snapshot.destroy(true);
       detachMeta(pane.backendId);
+      forgetPaneHost(pane.backendId);
       detachRecorder(pane.backendId);
       forgetPaneId(pane.stableId);
       pane.terminal.dispose();
@@ -991,6 +1002,9 @@ function App() {
     rememberPaneId(stableId);
     attachMeta(result.pane_id, terminal, shell);
     attachRecorder(result.pane_id, terminal, () => localPeerId());
+    // Eager first probe so the host badge paints with real data instead
+    // of waiting up to 3s for the global poller.
+    refreshPaneHost(result.pane_id).catch(() => {});
 
     // Send input to backend
     terminal.onData((data) => {
@@ -1143,6 +1157,7 @@ function App() {
     if (pane) {
       await pane.snapshot.destroy(true);
       detachMeta(pane.backendId);
+      forgetPaneHost(pane.backendId);
       detachRecorder(pane.backendId);
       forgetPaneId(pane.stableId);
       pane.terminal.dispose();
@@ -1166,6 +1181,7 @@ function App() {
       if (pane) {
         pane.snapshot.destroy(true);
         detachMeta(pane.backendId);
+        forgetPaneHost(pane.backendId);
         forgetPaneId(pane.backendId);
         pane.terminal.dispose();
         ipc.closePane(pane.backendId);

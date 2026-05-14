@@ -21,8 +21,9 @@
 #[cfg(target_os = "windows")]
 use windows::Win32::{
     Foundation::{HWND, LPARAM, WPARAM},
-    System::{
-        Threading::{GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION},
+    System::Threading::{
+        GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     },
     UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowThreadProcessId, SetWinEventHook, UnhookWinEvent,
@@ -81,7 +82,9 @@ unsafe extern "system" fn win_event_callback(
         None => return,
     };
 
-    let is_terminal = TERMINAL_EXES.iter().any(|t| exe_name.eq_ignore_ascii_case(t));
+    let is_terminal = TERMINAL_EXES
+        .iter()
+        .any(|t| exe_name.eq_ignore_ascii_case(t));
     let is_termgrid = exe_name.eq_ignore_ascii_case("TermGrid.exe");
 
     let mut state = match DRAG_STATE.lock() {
@@ -93,10 +96,21 @@ unsafe extern "system" fn win_event_callback(
         state.last_terminal_pid = Some(pid);
     } else if is_termgrid {
         // If we just saw a terminal and now TermGrid is foreground, treat
-        // it as a "drag-to-drop" proxy.
+        // it as a "drag-to-drop" proxy. `term_pid` is the host PID
+        // (WindowsTerminal.exe / cmd.exe) — `list_adoptable_sessions`
+        // returns shell PIDs, so we resolve the youngest shell descendant
+        // before publishing for the frontend poll.
         if let Some(term_pid) = state.last_terminal_pid {
-            state.pending_adoption_pid = Some(term_pid);
-            state.last_terminal_pid = None;
+            // Drop the lock while we do a sysinfo walk so the callback
+            // doesn't block other event hooks.
+            drop(state);
+            let shell_pid =
+                super::discover::youngest_shell_descendant(term_pid).unwrap_or(term_pid);
+            if let Ok(mut state) = DRAG_STATE.lock() {
+                state.pending_adoption_pid = Some(shell_pid);
+                state.last_terminal_pid = None;
+            }
+            return;
         }
     } else {
         // Some other app is foreground; reset tracking
