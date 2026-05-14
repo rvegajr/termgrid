@@ -857,11 +857,11 @@ function App() {
     },
     {
       id: "toggle-drag-monitor",
-      name: dragMonitorActive() ? "Stop Drag Monitor" : "Start Drag Monitor (Windows)",
+      name: dragMonitorActive() ? "Stop Drag Monitor" : "Start Drag Monitor",
       description: dragMonitorActive()
         ? "Stop monitoring for drag-to-drop adoption"
-        : "Start monitoring for terminal windows dragged to TermGrid",
-      keywords: ["drag", "drop", "monitor", "windows", "adoption"],
+        : "Start monitoring for terminal windows dragged to TermGrid (Windows/macOS)",
+      keywords: ["drag", "drop", "monitor", "windows", "macos", "adoption"],
       action: async () => {
         if (dragMonitorActive()) {
           try {
@@ -873,13 +873,32 @@ function App() {
           }
         } else {
           try {
+            // On macOS, check for Accessibility permissions first
+            if (navigator.platform.toLowerCase().includes("mac")) {
+              const hasPermission = await adoption.checkAccessibilityPermission();
+              if (!hasPermission) {
+                const shouldRequest = confirm(
+                  "Drag monitoring on macOS requires Accessibility permissions.\n\n" +
+                  "Click OK to open System Preferences where you can grant access to TermGrid."
+                );
+                if (shouldRequest) {
+                  await adoption.requestAccessibilityPermission();
+                  alert(
+                    "Please grant Accessibility access to TermGrid in System Preferences, " +
+                    "then restart the drag monitor."
+                  );
+                }
+                return;
+              }
+            }
+
             await adoption.startDragMonitor();
             setDragMonitorActive(true);
-            console.info("Drag monitor started — Alt+Tab between terminal and TermGrid to adopt");
+            console.info("Drag monitor started — drag/switch terminal windows to TermGrid to adopt");
             startDragPolling();
           } catch (err) {
             console.error("Failed to start drag monitor:", err);
-            alert(`Drag monitoring is only supported on Windows: ${err}`);
+            alert(`Failed to start drag monitor: ${err}`);
           }
         }
       },

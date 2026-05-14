@@ -344,7 +344,17 @@ export async function stopDragMonitor(): Promise<void> {
   return invoke("stop_drag_monitor_cmd");
 }
 
-/** **v5 (Windows):** Poll for pending drag-to-drop PIDs. Returns null if none. */
+/** **v5 (Windows/macOS):** Poll for pending drag-to-drop PIDs. Returns null if none. */
 export async function pollDragEvents(): Promise<number | null> {
   return invoke("poll_drag_events_cmd");
+}
+
+/** **v5 (macOS):** Check if Accessibility permissions are granted. */
+export async function checkAccessibilityPermission(): Promise<boolean> {
+  return invoke("check_accessibility_permission_cmd");
+}
+
+/** **v5 (macOS):** Request Accessibility permissions from the user. */
+export async function requestAccessibilityPermission(): Promise<void> {
+  return invoke("request_accessibility_permission_cmd");
 }

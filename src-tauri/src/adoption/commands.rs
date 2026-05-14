@@ -311,33 +311,93 @@ pub fn install_shell_plugins_cmd() -> Result<super::plugin_installer::InstallRes
 }
 
 /**
- * **v5 (Windows):** Start monitoring for drag-to-drop adoption events.
+ * **v5 (Windows/macOS):** Start monitoring for drag-to-drop adoption events.
  * 
- * Installs a Windows event hook that tracks foreground window changes.
- * When a terminal window is brought to the foreground followed by TermGrid,
- * we treat it as a "drag-to-drop" proxy and make the PID available via
- * `poll_drag_events_cmd`.
+ * - Windows: Installs an event hook tracking foreground window changes
+ * - macOS: Monitors window positions via Accessibility API (requires permissions)
+ * 
+ * When a terminal window is dragged/switched to TermGrid, the PID is made
+ * available via `poll_drag_events_cmd`.
  */
 #[tauri::command]
 pub fn start_drag_monitor_cmd() -> Result<(), String> {
-    super::drag_windows::start_drag_monitor()
+    #[cfg(target_os = "windows")]
+    {
+        super::drag_windows::start_drag_monitor()
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        // In production, the frontend would pass actual window bounds.
+        // For now, use a placeholder rect.
+        let bounds = core_graphics::display::CGRect::new(
+            &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+            &core_graphics::geometry::CGSize::new(1200.0, 800.0),
+        );
+        super::drag_macos::start_drag_monitor(bounds)
+    }
+    
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        Err("Drag monitoring is not supported on this platform".into())
+    }
 }
 
 /**
- * **v5 (Windows):** Stop monitoring for drag events.
+ * **v5 (Windows/macOS):** Stop monitoring for drag events.
  */
 #[tauri::command]
 pub fn stop_drag_monitor_cmd() -> Result<(), String> {
-    super::drag_windows::stop_drag_monitor()
+    #[cfg(target_os = "windows")]
+    {
+        super::drag_windows::stop_drag_monitor()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        super::drag_macos::stop_drag_monitor()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        Ok(())
+    }
 }
 
 /**
- * **v5 (Windows):** Poll for pending drag-to-drop adoption PIDs.
+ * **v5 (Windows/macOS):** Poll for pending drag-to-drop adoption PIDs.
  * 
- * Returns `Some(pid)` if a terminal window was "dragged" (focus-switched)
- * to TermGrid since the last poll. Returns `None` if no pending events.
+ * Returns `Some(pid)` if a terminal window was "dragged" (focus-switched
+ * on Windows, or physically dragged on macOS) to TermGrid since the last
+ * poll. Returns `None` if no pending events.
  */
 #[tauri::command]
 pub fn poll_drag_events_cmd() -> Option<u32> {
-    super::drag_windows::poll_drag_events()
+    #[cfg(target_os = "windows")]
+    {
+        super::drag_windows::poll_drag_events()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        super::drag_macos::poll_drag_events()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/**
+ * **v5 (macOS):** Check if Accessibility permissions are granted.
+ */
+#[tauri::command]
+pub fn check_accessibility_permission_cmd() -> bool {
+    super::drag_macos::check_accessibility_permission()
+}
+
+/**
+ * **v5 (macOS):** Request Accessibility permissions from the user.
+ * Opens System Preferences to the Accessibility pane.
+ */
+#[tauri::command]
+pub fn request_accessibility_permission_cmd() -> Result<(), String> {
+    super::drag_macos::request_accessibility_permission()
 }

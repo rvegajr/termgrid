@@ -44,6 +44,8 @@ pub fn run() {
             adoption::commands::start_drag_monitor_cmd,
             adoption::commands::stop_drag_monitor_cmd,
             adoption::commands::poll_drag_events_cmd,
+            adoption::commands::check_accessibility_permission_cmd,
+            adoption::commands::request_accessibility_permission_cmd,
         ])
         .setup(|app| {
             // Apply cached window geometry before showing the window
