@@ -102,6 +102,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # macos-latest's runner image ships rustup-init on PATH ahead of
+      # the rustup proxies; without an explicit default, `cargo metadata`
+      # ends up invoking rustup-init and exploding. Pin the default
+      # toolchain so the proxies resolve to a real cargo.
+      - name: Pin rustup default
+        shell: bash
+        run: rustup default stable
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
