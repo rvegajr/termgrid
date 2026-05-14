@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/rvegajr/termgrid/compare/v0.1.3...v0.1.4) (2026-05-14)
+
+
+### Bug Fixes
+
+* **release:** unwire macOS signing until cert is installed in CI ([19a6d7e](https://github.com/rvegajr/termgrid/commit/19a6d7ed02927321417e19e1da1865722f6c0b9c))
+
 ## [0.1.3](https://github.com/rvegajr/termgrid/compare/v0.1.2...v0.1.3) (2026-05-14)
 
 
