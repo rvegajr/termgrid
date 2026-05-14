@@ -287,18 +287,31 @@ pub fn snapshot(pid: u32) -> SessionSnapshot {
     // v2 probes — each independently fail-safe.
     // v3: pass the resolved tty so the buffer scrape can match the exact
     // tab in Terminal.app / iTerm2 instead of guessing frontmost.
-    let buffer_preview = super::buffer_scrape::scrape(
-        pid,
-        ancestry.host.as_deref(),
-        tty.as_deref(),
-    );
+    // v5: try shell plugin first for buffer, then fall back to AppleScript/tmux.
+    let mut buffer_preview = super::shell_plugin::buffer_from_plugin(pid);
+    if buffer_preview.is_none() {
+        buffer_preview = super::buffer_scrape::scrape(
+            pid,
+            ancestry.host.as_deref(),
+            tty.as_deref(),
+        );
+    }
     // v4: on macOS (and any host where direct env probe is denied) we
     // fall back to spawning a fresh shell in the candidate's CWD and
     // dumping what *that* shell sees. This catches direnv/asdf/mise/nvm
     // and project `.envrc` files — almost always what the user wants
     // when adopting. Skip on Windows (no `.envrc`-style ecosystem) and
     // when we don't know the CWD.
-    let mut env_vars = super::env_capture::env_of_pid(pid);
+    // v5: try shell plugin first (highest fidelity, works cross-platform).
+    let plugin_env: Vec<super::types::EnvVar> = super::shell_plugin::env_from_plugin(pid)
+        .into_iter()
+        .map(|(name, value)| super::types::EnvVar { name, value })
+        .collect();
+    let mut env_vars = if !plugin_env.is_empty() {
+        plugin_env
+    } else {
+        super::env_capture::env_of_pid(pid)
+    };
     if env_vars.is_empty() {
         if let Some(cwd_str) = cwd.as_deref() {
             let cwd_path = std::path::Path::new(cwd_str);

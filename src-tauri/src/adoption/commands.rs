@@ -297,3 +297,15 @@ pub struct ClipboardCapture {
 pub fn replay_env_in_cwd_cmd(shell: String, cwd: String) -> Vec<super::types::EnvVar> {
     super::env_capture::replay_env_in_cwd(&shell, std::path::Path::new(&cwd))
 }
+
+/**
+ * **v5:** Install TermGrid shell plugins to `~/.termgrid/plugins/`.
+ * 
+ * Returns installation instructions for the user. The plugins enable
+ * cooperative adoption: shells voluntarily export their environment and
+ * buffer state, eliminating the need for platform-specific introspection.
+ */
+#[tauri::command]
+pub fn install_shell_plugins_cmd() -> Result<super::plugin_installer::InstallResult, String> {
+    super::plugin_installer::install_plugins()
+}

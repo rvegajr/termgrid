@@ -322,3 +322,14 @@ export function formatAge(startedAt: number, nowSec = Math.floor(Date.now() / 10
   if (days < 30) return `${days}d`;
   return "30d+";
 }
+
+export interface InstallPluginsResult {
+  success: boolean;
+  plugins_dir: string;
+  instructions: string;
+}
+
+/** **v5:** Install TermGrid shell plugins to `~/.termgrid/plugins/`. */
+export async function installShellPlugins(): Promise<InstallPluginsResult> {
+  return invoke("install_shell_plugins_cmd");
+}

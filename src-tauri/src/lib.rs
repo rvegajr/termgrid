@@ -40,6 +40,7 @@ pub fn run() {
             adoption::commands::snap_to_frontmost_cmd,
             adoption::commands::replay_env_in_cwd_cmd,
             adoption::commands::clipboard_capture_cmd,
+            adoption::commands::install_shell_plugins_cmd,
         ])
         .setup(|app| {
             // Apply cached window geometry before showing the window

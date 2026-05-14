@@ -806,6 +806,25 @@ function App() {
         }
       },
     },
+    {
+      id: "install-shell-plugins",
+      name: "Install Shell Plugins…",
+      description:
+        "Install TermGrid shell plugins for cooperative adoption (zsh/bash/fish)",
+      keywords: ["plugin", "shell", "install", "setup", "adoption", "env"],
+      action: async () => {
+        try {
+          const result = await adoption.installShellPlugins();
+          if (result.success) {
+            console.info(result.instructions);
+            alert(result.instructions);
+          }
+        } catch (err) {
+          console.error("Failed to install shell plugins:", err);
+          alert(`Failed to install shell plugins: ${err}`);
+        }
+      },
+    },
   ];
 
   async function createPaneState(shell?: string, opts?: { stableId?: string; shouldRestoreSnapshot?: boolean; cwd?: string }): Promise<PaneState> {

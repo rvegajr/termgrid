@@ -16,6 +16,8 @@ pub mod discover;
 pub mod env_capture;
 pub mod frontmost;
 pub mod history;
+pub mod plugin_installer;
+pub mod shell_plugin;
 pub mod ssh_parse;
 pub mod types;
 
