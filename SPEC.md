@@ -174,6 +174,44 @@ Corporate Network                    Relay Server (Cloud)                User's 
 - Terminal state sync (new viewer gets current screen state, not blank)
 - Latency-tolerant (buffered updates, catch-up on reconnect)
 
+### 3.6 Session Adoption (shipped in v0.1.3)
+
+Pull a shell from any other terminal app (Terminal.app, iTerm2, gnome-terminal, Windows Terminal, etc.) into a TermGrid pane without losing CWD, history, env, or SSH context.
+
+**Capabilities**
+
+- **Adoption picker** — enumerate every interactive shell on the host, filter to user's processes, tag with parent terminal-host, flag SSH-derived sessions.
+- **Snap-to-frontmost** — one-shot adopt the youngest shell under the focused terminal app.
+- **Drag-to-pane** — foreground-window transition watcher (terminal → TermGrid). Per-OS implementations:
+  - **Windows**: `SetWinEventHook` on `EVENT_SYSTEM_FOREGROUND`. Resolves host PID → youngest shell descendant via `sysinfo`.
+  - **macOS**: 250 ms poller over `osascript … unix id of frontmost process`. Foreground transition + shell-descendant lookup. `AXIsProcessTrusted()` is reported so the UI can nudge users toward Accessibility access when they want the upgraded true-window-rect path later.
+  - **Linux/X11**: 250 ms poller over `xdotool getactivewindow getwindowpid` + `/proc/<pid>/comm`. Wayland is not supported (no foreign-window introspection).
+- **Environment capture priority chain**:
+  1. macOS native (`KERN_PROCARGS2` sysctl — full env block, no entitlement, works on unsigned builds)
+  2. Shell plugin (`~/.termgrid/shell-state/<PID>.json`, user opt-in, cross-platform)
+  3. `ps -E` (macOS) or `/proc/<pid>/environ` (Linux)
+  4. `replay_env_in_cwd` — spawn a fresh login shell in the candidate's CWD and dump `export -p` (catches direnv / asdf / mise / nvm / `.envrc`)
+
+  All paths funnel through a hard-coded allow-list (`PATH`, `LANG`, `VIRTUAL_ENV`, `NVM_DIR`, `CONDA_DEFAULT_ENV`, language toolchain vars). Anything matching `*_TOKEN`, `*_KEY`, `*_SECRET` is never forwarded.
+- **SSH-aware reconnect** — for `via_ssh: true` rows, parse the ssh argv (`ps -o args=`), extract `user@host:port`, optionally emit `-o SendEnv=NAME` for allow-listed toolchain vars so they survive the hop.
+- **Adoption memory** — every successful adoption records the CWD; recent CWDs surface on the welcome screen. Importable / exportable as JSON.
+- **Shell plugins** — optional `~/.termgrid/plugins/termgrid.{zsh,bash,fish}` hooks (see [shell-plugins/README.md](shell-plugins/README.md)) that drop a JSON snapshot per shell PID on every prompt.
+
+**Per-pane "where am I" indicator**
+
+Each pane label shows a small host pill:
+- **Gray** local hostname (default)
+- **Yellow** `ssh → user@host` when an `ssh` / `mosh-client` descendant is detected in the pane's PTY process tree.
+
+Backed by the `pane_remote_context` Tauri command (polled every 3 s per pane). Reuses the same `ssh_parse` logic as the picker.
+
+**Privacy stance**
+
+- All probes are read-only — we never `ptrace`, attach a debugger, or modify the foreign process.
+- Env allow-list is enforced in Rust before crossing the IPC boundary.
+- Drag-to-pane never inspects content — only window-focus identifiers and process names.
+- Shell plugins are opt-in and refuse to export secrets by name pattern.
+
 ---
 
 ## 4. Cross-Platform

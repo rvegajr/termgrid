@@ -80,3 +80,5 @@ PR titles should also follow Conventional Commits — release-please reads merge
 - `src-tauri/src/pty/manager.rs` — PTY spawning. Env vars set here affect every shell.
 - `src/services/workspace.ts` — restart-persistence schema. Bump `KEY` if you change the shape.
 - `src-tauri/src/history/db.rs` — SQLite schema + FTS5. Migrations are append-only.
+- `src-tauri/src/adoption/` — session adoption (picker, drag detection, env capture, ssh parse). Env probes go through `env_capture::filter_to_allowlist`; never add a name to the allow-list without a privacy review.
+- `shell-plugins/` — opt-in zsh/bash/fish hooks that export shell state to `~/.termgrid/shell-state/<PID>.json`. Plugin output is read by `adoption::shell_plugin`. Anything you add here ships into every user's shell, so it must be silent, fast, and refuse to export secrets.

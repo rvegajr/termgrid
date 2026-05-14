@@ -23,7 +23,7 @@ An auto-tiling, cross-platform terminal with cross-device session mirroring. Bui
 
 - **Welcome screen** every launch with platform-aware shell pickers (`$SHELL`, `/etc/shells`, full PATH walk on Unix; pwsh / Windows PowerShell / CMD / Git Bash / WSL distros on Windows). Default shell is highlighted.
 - **Restore last session** — prominent button on the welcome screen if a previous workspace exists. Brings back tabs, panes, per-tab layout, edge-drag overrides, and 100k-line scrollback. Shells start fresh; only the visual state is replayed.
-- **Pane labels** — top-right of every pane shows `cwd · branch · shell`. Auto-sniffed from prompt; OSC 7 / OSC 133 escape sequences override for perfect accuracy. Yellow dot = sniffed, green dot = OSC.
+- **Pane labels** — top-right of every pane shows a small host pill plus `cwd · branch · shell`. The pill reads as the local hostname (gray) by default and switches to `ssh → user@host` (yellow) when the shell's child process tree contains an active `ssh` / `mosh-client`. Auto-sniffed from prompt; OSC 7 / OSC 133 escape sequences override for perfect accuracy. Yellow dot = sniffed, green dot = OSC.
 - **Settings gear** (⚙) — pick from 12 monospace fonts, 10 sizes, cursor blink toggle, "Reset workspace" hard-reset.
 
 ### Command history
@@ -39,6 +39,22 @@ An auto-tiling, cross-platform terminal with cross-device session mirroring. Bui
 - Each pane's terminal state is auto-serialized to disk every 5 seconds (debounced) via `@xterm/addon-serialize`.
 - On restore, scrollback is replayed before the new shell prints its first prompt — visual continuity above a fresh prompt.
 - Files: `~/.../TermGrid/panes/<stableId>.txt`.
+
+### Session adoption (v0.1.3+)
+
+Pull a shell from another terminal app — Terminal.app, iTerm2, gnome-terminal, Windows Terminal, etc. — into a TermGrid pane without losing your CWD, history, environment, or SSH connection.
+
+- **Adoption picker** — palette command **Adopt session…**. Lists every interactive shell on the host (`zsh`, `bash`, `fish`, `pwsh`, `cmd`, `pwsh`, `nu`, `tcsh`, `ksh`, `dash`, `elvish`, `xonsh`), filtered to your processes, tagged with their parent terminal-host app. SSH-spawned shells are flagged so you can choose "reconnect via ssh" instead of `cd` into the local client's cwd.
+- **Snap to frontmost** — palette command **Adopt frontmost terminal**. Bring the source terminal to focus, hit the hotkey, and TermGrid picks the most-recently-spawned shell under that app. If multiple candidates exist, the picker opens pre-filtered.
+- **Drag-to-pane** — palette command **Start Drag Monitor**. Watches foreground-window transitions: when you switch from a recognized terminal app to TermGrid, the youngest shell under that app is queued for adoption. Works cross-platform via `SetWinEventHook` (Windows), AppleScript polling (macOS), and `xdotool` polling (Linux/X11). Wayland is not supported (no foreign-window introspection).
+- **Environment capture** — direct read of the foreign process's full env block via:
+  - macOS: `KERN_PROCARGS2` sysctl (no entitlement, no signing required — works on unsigned builds today)
+  - Linux: `/proc/<pid>/environ`
+  - All hosts: opt-in **shell-cooperative plugin** for high-fidelity capture (see [shell-plugins/README.md](shell-plugins/README.md))
+  Captured vars are filtered through a hard-coded allow-list (`PATH`, `LANG`, `VIRTUAL_ENV`, `NVM_DIR`, `CONDA_DEFAULT_ENV`, language toolchain vars). Secrets and `*_TOKEN`/`*_KEY`/`*_SECRET` patterns are never forwarded.
+- **SSH-aware reconnect** — for `via_ssh` rows, the picker shows the parsed `user@host:port` and lets you reissue the original `ssh` command (with optional `SendEnv` flags so toolchain vars survive the hop) in the new pane.
+- **Adoption memory** — every successful adoption records the CWD; recent CWDs surface on the welcome screen. Palette commands **Export Adoption History…** and **Import Adoption History…** let you back up or sync across machines.
+- **Shell plugins** — optional `~/.termgrid/plugins/termgrid.{zsh,bash,fish}` hooks that drop a JSON snapshot per shell PID into `~/.termgrid/shell-state/`. Install via palette command **Install Shell Plugins…**. See [shell-plugins/README.md](shell-plugins/README.md).
 
 ### Cross-device session linking
 
@@ -110,6 +126,9 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
 | **Ctrl+N** | Add another pane to current tab (auto-tiles) |
 | **Ctrl+W** | Close active pane |
 | **Ctrl+R** | Open command history (per-pane / global, FTS search) |
+| **Ctrl+F** | Global search across all panes |
+| **Ctrl+P** | Command palette (everything below + more) |
+| **Ctrl+S** | Save current layout as a session template |
 | Click `+` → 4/6/8 grid | Open a multi-pane tab |
 | Click ⚙ | Font, size, cursor, workspace reset |
 | Click a layout button | Set the active tab's layout (saved per-tab) |
@@ -118,6 +137,19 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
 | Double-click edge / background | Reset overrides for the active tab |
 | Right-click a folder (after install) | Open it in an existing pane / unused pane / new tab |
 
+### Command palette (Ctrl+P)
+
+Most v5 features live here so they don't bloat the title bar. Highlights:
+
+| Command | What it does |
+|---|---|
+| **Adopt session…** | Open the picker over every adoptable shell on the host |
+| **Adopt frontmost terminal** | One-shot adopt the youngest shell under the focused terminal app |
+| **Start Drag Monitor / Stop Drag Monitor** | Toggle the foreground-transition watcher for drag-to-pane adoption |
+| **Install Shell Plugins…** | Drop zsh/bash/fish hooks into `~/.termgrid/plugins/` |
+| **Export Adoption History… / Import Adoption History…** | Back up or sync the per-CWD adoption memory |
+| **Save Session as Template…** | Persist the current tab/pane layout for later restore |
+
 ## Architecture
 
 ```
@@ -125,9 +157,11 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
 │  SolidJS frontend (src/)                                        │
 │  ├─ components/   TitleBar, ResizablePane, HistoryPanel,        │
 │  │                PaneLabel, RemoteViewer, SettingsMenu,        │
-│  │                HelpTip                                       │
+│  │                AdoptionPicker, HelpTip                       │
 │  ├─ services/                                                   │
 │  │   ├─ relay.js           ←  THE ONLY cross-device comms       │
+│  │   ├─ adoption.ts        ←  session-adoption IPC + ssh parse  │
+│  │   ├─ pane-host.ts       ←  local / ssh host indicator        │
 │  │   ├─ deep-link.ts       ←  termgrid:// URL handler           │
 │  │   ├─ pane-snapshot.ts   ←  per-pane scrollback (disk)        │
 │  │   ├─ pane-meta.ts       ←  cwd / branch / shell sniffer      │
@@ -140,10 +174,18 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
                           ▲ ▼ Tauri IPC + tauri-plugin-deep-link
 ┌─────────────────────────────────────────────────────────────────┐
 │  Rust backend (src-tauri/src/)                                  │
+│  ├─ adoption/                                                   │
+│  │   ├─ discover.rs         shell enumeration + ancestry tag    │
+│  │   ├─ drag_{macos,linux,windows}.rs                           │
+│  │   ├─ env_capture.rs      ps -E / /proc env probes            │
+│  │   ├─ env_macos_native.rs KERN_PROCARGS2 sysctl reader        │
+│  │   ├─ shell_plugin.rs     ~/.termgrid/shell-state/ reader     │
+│  │   ├─ ssh_parse.rs        argv → user@host:port               │
+│  │   └─ frontmost.rs        per-OS frontmost-app probe          │
 │  ├─ pty/             portable-pty spawn + read + resize         │
 │  ├─ history/         SQLite + FTS5 (rusqlite, bundled)          │
 │  ├─ snapshot.rs      on-disk scrollback files                   │
-│  ├─ commands.rs      Tauri command surface                      │
+│  ├─ commands.rs      Tauri command surface (incl. pane_remote_context) │
 │  └─ pty/shell_detect.rs                                         │
 │       Linux/macOS: $SHELL → /etc/shells → PATH walk → backstops │
 │       Windows: pwsh → Windows PS → CMD → Git Bash → WSL distros │
@@ -174,8 +216,8 @@ See [RELEASING.md](RELEASING.md) — the four release rules, per-release runbook
 
 ## Tests
 
-- **40 frontend tests** ([src/__tests__/](src/__tests__/)) — vitest + jsdom; covers layout engine, relay protocol, stores.
-- **17 Rust tests** ([src-tauri/src/](src-tauri/src/)) — cargo test --lib; covers PTY lifecycle and history DB (in-memory SQLite).
+- **92 frontend tests** ([src/__tests__/](src/__tests__/)) — vitest + jsdom; covers layout engine, relay protocol, stores, adoption import/export.
+- **97 Rust tests** ([src-tauri/src/](src-tauri/src/)) — `cargo test --lib`; covers PTY lifecycle, history DB (in-memory SQLite), adoption discovery + env parsing, `KERN_PROCARGS2` reader, ssh argv parser.
 - **3-platform CI matrix** on every PR — macOS, Linux, Windows debug builds + lint/test/fmt/clippy gates.
 
 ## License

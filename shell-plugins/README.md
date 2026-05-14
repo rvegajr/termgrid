@@ -68,4 +68,4 @@ If TermGrid isn't picking up your shell state:
 2. Check the state file exists: `ls ~/.termgrid/shell-state/$$.json`
 3. Ensure the file is fresh: it should update on every prompt
 
-For issues, file a bug at https://github.com/your-repo/termgrid/issues
+For issues, file a bug at https://github.com/rvegajr/termgrid/issues
