@@ -33,8 +33,6 @@
     ],
     "createUpdaterArtifacts": false,
     "macOS": {
-      "signingIdentity": "Developer ID Application: NoctuSoft, Inc. (N42FM5L5KD)",
-      "entitlements": "entitlements.plist",
       "minimumSystemVersion": "10.15"
     }
   },
