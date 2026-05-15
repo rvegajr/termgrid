@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.5](https://github.com/rvegajr/termgrid/compare/v0.1.4...v0.1.5) (2026-05-15)
+
+
+### Features
+
+* drop-to-paste for text + files / folders; rename misnamed drag monitor ([fccc4cf](https://github.com/rvegajr/termgrid/commit/fccc4cf090b849942957f5716cbd15255a9af42d))
+
+
+### Docs
+
+* document v5 session adoption + per-pane host indicator ([1d3a814](https://github.com/rvegajr/termgrid/commit/1d3a81436df6ecbdbf8467b3ba5900003c9a381b))
+
 ## [0.1.4](https://github.com/rvegajr/termgrid/compare/v0.1.3...v0.1.4) (2026-05-14)
 
 
