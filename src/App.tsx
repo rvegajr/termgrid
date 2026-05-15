@@ -1,6 +1,8 @@
 import { createSignal, createMemo, onMount, For, createEffect, Show, batch } from "solid-js";
 import "@xterm/xterm/css/xterm.css";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { quoteShellPath, quoteShellPaths, findElementAtPoint } from "./services/pane-drop";
 import { loadTerminalModules, prefetchTerminalModules } from "./services/terminal-loader";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
@@ -388,6 +390,31 @@ function App() {
         refreshPaneHost(p.backendId).catch(() => {});
       }
     }, 3000);
+
+    // File / folder drops. Tauri intercepts OS file drags before the
+    // webview sees them, so we use its dedicated event instead of HTML5
+    // drop. Payload gives us absolute paths plus the drop position; we
+    // hit-test against pane DOM rects to route the paste to the right
+    // pane. Falls through silently if the drop landed outside any pane.
+    getCurrentWebviewWindow().onDragDropEvent((event) => {
+      if (event.payload.type !== "drop") return;
+      const { paths, position } = event.payload;
+      if (!paths || paths.length === 0) return;
+      const candidates = Array.from(paneEls.entries()).map(
+        ([backendId, el]) => ({ el, payload: backendId }),
+      );
+      const backendId = findElementAtPoint(
+        position.x,
+        position.y,
+        candidates,
+      );
+      if (!backendId) return;
+      // Match iTerm2 / Terminal.app: paste the path(s), do NOT execute.
+      // Leading space so the dropped path appends cleanly after whatever
+      // the user already typed on the prompt line.
+      const text = (paths.length === 1 ? quoteShellPath(paths[0]) : quoteShellPaths(paths));
+      ipc.writePane(backendId, " " + text);
+    });
   });
 
   function handleKeyDown(e: KeyboardEvent) {
@@ -693,6 +720,7 @@ function App() {
       pane.snapshot.destroy(true);
       detachMeta(pane.backendId);
       forgetPaneHost(pane.backendId);
+      paneEls.delete(pane.backendId);
       detachRecorder(pane.backendId);
       forgetPaneId(pane.stableId);
       pane.terminal.dispose();
@@ -867,49 +895,34 @@ function App() {
       },
     },
     {
-      id: "toggle-drag-monitor",
-      name: dragMonitorActive() ? "Stop Drag Monitor" : "Start Drag Monitor",
+      id: "toggle-auto-adopt",
+      name: dragMonitorActive()
+        ? "Stop auto-adopt on app switch"
+        : "Auto-adopt on app switch…",
       description: dragMonitorActive()
-        ? "Stop monitoring for drag-to-drop adoption"
-        : "Start monitoring for terminal windows dragged to TermGrid (Windows/macOS/Linux X11)",
-      keywords: ["drag", "drop", "monitor", "windows", "macos", "linux", "x11", "adoption"],
+        ? "Stop watching for terminal → TermGrid focus switches"
+        : "When you switch from a terminal app (Terminal.app, iTerm2, gnome-terminal, Windows Terminal, …) to TermGrid, auto-adopt the most recently used shell from that app. No mouse drag involved — it's a focus-transition watcher.",
+      keywords: ["adopt", "focus", "switch", "auto", "drag", "terminal", "monitor"],
       action: async () => {
         if (dragMonitorActive()) {
           try {
             await adoption.stopDragMonitor();
             setDragMonitorActive(false);
-            console.info("Drag monitor stopped");
+            console.info("Auto-adopt stopped");
           } catch (err) {
-            console.error("Failed to stop drag monitor:", err);
+            console.error("Failed to stop auto-adopt:", err);
           }
         } else {
           try {
-            // On macOS, check for Accessibility permissions first
-            if (navigator.platform.toLowerCase().includes("mac")) {
-              const hasPermission = await adoption.checkAccessibilityPermission();
-              if (!hasPermission) {
-                const shouldRequest = confirm(
-                  "Drag monitoring on macOS requires Accessibility permissions.\n\n" +
-                  "Click OK to open System Preferences where you can grant access to TermGrid."
-                );
-                if (shouldRequest) {
-                  await adoption.requestAccessibilityPermission();
-                  alert(
-                    "Please grant Accessibility access to TermGrid in System Preferences, " +
-                    "then restart the drag monitor."
-                  );
-                }
-                return;
-              }
-            }
-
             await adoption.startDragMonitor();
             setDragMonitorActive(true);
-            console.info("Drag monitor started — drag/switch terminal windows to TermGrid to adopt");
+            console.info(
+              "Auto-adopt started — switch from a terminal app to TermGrid to adopt its shell",
+            );
             startDragPolling();
           } catch (err) {
-            console.error("Failed to start drag monitor:", err);
-            alert(`Failed to start drag monitor: ${err}`);
+            console.error("Failed to start auto-adopt:", err);
+            alert(`Failed to start auto-adopt: ${err}`);
           }
         }
       },
@@ -1158,6 +1171,7 @@ function App() {
       await pane.snapshot.destroy(true);
       detachMeta(pane.backendId);
       forgetPaneHost(pane.backendId);
+      paneEls.delete(pane.backendId);
       detachRecorder(pane.backendId);
       forgetPaneId(pane.stableId);
       pane.terminal.dispose();
@@ -1182,6 +1196,7 @@ function App() {
         pane.snapshot.destroy(true);
         detachMeta(pane.backendId);
         forgetPaneHost(pane.backendId);
+        paneEls.delete(pane.backendId);
         forgetPaneId(pane.backendId);
         pane.terminal.dispose();
         ipc.closePane(pane.backendId);
@@ -1198,8 +1213,12 @@ function App() {
   }
 
   const mountedPanes = new Set<string>();
+  // pane backendId → DOM element. Used by the Tauri file-drop hit-test to
+  // figure out which pane the user dropped a file on.
+  const paneEls = new Map<string, HTMLDivElement>();
 
   function mountTerminal(el: HTMLDivElement, pane: PaneState) {
+    paneEls.set(pane.backendId, el);
     if (mountedPanes.has(pane.id)) {
       // Already mounted — just refit in case container changed
       pane.fitAddon.fit();
@@ -1208,6 +1227,28 @@ function App() {
 
     pane.terminal.open(el);
     pane.fitAddon.fit();
+
+    // Text drag-drop: drop selected text from another app (or the same
+    // window) onto the pane to paste it. Files are intercepted by Tauri
+    // and routed via the window-level onDragDropEvent listener — see
+    // onMount below.
+    el.addEventListener("dragover", (e) => {
+      // Only handle text drags; let Tauri's file-drop event take files.
+      // `types` contains "Files" for OS file drags; we ignore those here.
+      if (e.dataTransfer?.types.includes("Files")) return;
+      e.preventDefault();
+      e.dataTransfer!.dropEffect = "copy";
+    });
+    el.addEventListener("drop", (e) => {
+      if (e.dataTransfer?.types.includes("Files")) return;
+      e.preventDefault();
+      const text =
+        e.dataTransfer?.getData("text/plain") ??
+        e.dataTransfer?.getData("text") ??
+        "";
+      if (!text) return;
+      ipc.writePane(pane.backendId, text);
+    });
     mountedPanes.add(pane.id);
     
     // Defer WebGL addon loading until browser is idle (non-blocking)
