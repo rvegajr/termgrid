@@ -257,10 +257,12 @@ function App() {
   const [welcomeShellIndex, setWelcomeShellIndex] = createSignal(0);
   const [draggedTabId, setDraggedTabId] = createSignal<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = createSignal<string | null>(null);
+  // (drag-to-pane adoption monitor was explored in v5 but removed — the UX
+  //  never landed cleanly. Use "Snap to Frontmost Terminal" (Ctrl+Shift+Alt+A)
+  //  or the regular adoption picker instead.)
   const [showCommandPalette, setShowCommandPalette] = createSignal(false);
   const [showAdoptionPicker, setShowAdoptionPicker] = createSignal(false);
   const [adoptionParentFilter, setAdoptionParentFilter] = createSignal<string | null>(null);
-  const [dragMonitorActive, setDragMonitorActive] = createSignal(false);
   const [showGlobalSearch, setShowGlobalSearch] = createSignal(false);
   const [showTemplateManager, setShowTemplateManager] = createSignal(false);
   const [shellProfilesList, setShellProfilesList] = createSignal<shellProfiles.ShellProfile[]>([]);
@@ -668,35 +670,6 @@ function App() {
     setShowAdoptionPicker(true);
   }
 
-  /**
-   * **v5 (Windows):** Start polling for drag events. When a terminal window
-   * is "dragged" (Alt+Tabbed) to TermGrid, auto-adopt the session.
-   */
-  function startDragPolling() {
-    const interval = setInterval(async () => {
-      if (!dragMonitorActive()) {
-        clearInterval(interval);
-        return;
-      }
-      const pid = await adoption.pollDragEvents();
-      if (pid) {
-        console.info(`Drag detected: adopting PID ${pid}`);
-        const sessions = await adoption.listAdoptableSessions();
-        const session = sessions.find((s) => s.pid === pid);
-        if (session) {
-          const snap = await adoption.snapshotSessionCached(pid);
-          await adoptSession(
-            session,
-            "new-tab",
-            snap?.ssh_target ? "ssh-reconnect" : "local-cwd",
-            snap,
-            { injectHistory: false, forwardEnvOverSsh: true },
-          );
-        }
-      }
-    }, 500); // Poll every 500ms
-  }
-
   const saveSessionAsTemplate = async (name: string, description: string) => {
     const template: Omit<sessionTemplates.SessionTemplate, "id" | "createdAt"> = {
       name,
@@ -891,39 +864,6 @@ function App() {
         } catch (err) {
           console.error("Failed to install shell plugins:", err);
           alert(`Failed to install shell plugins: ${err}`);
-        }
-      },
-    },
-    {
-      id: "toggle-auto-adopt",
-      name: dragMonitorActive()
-        ? "Stop auto-adopt on app switch"
-        : "Auto-adopt on app switch…",
-      description: dragMonitorActive()
-        ? "Stop watching for terminal → TermGrid focus switches"
-        : "When you switch from a terminal app (Terminal.app, iTerm2, gnome-terminal, Windows Terminal, …) to TermGrid, auto-adopt the most recently used shell from that app. No mouse drag involved — it's a focus-transition watcher.",
-      keywords: ["adopt", "focus", "switch", "auto", "drag", "terminal", "monitor"],
-      action: async () => {
-        if (dragMonitorActive()) {
-          try {
-            await adoption.stopDragMonitor();
-            setDragMonitorActive(false);
-            console.info("Auto-adopt stopped");
-          } catch (err) {
-            console.error("Failed to stop auto-adopt:", err);
-          }
-        } else {
-          try {
-            await adoption.startDragMonitor();
-            setDragMonitorActive(true);
-            console.info(
-              "Auto-adopt started — switch from a terminal app to TermGrid to adopt its shell",
-            );
-            startDragPolling();
-          } catch (err) {
-            console.error("Failed to start auto-adopt:", err);
-            alert(`Failed to start auto-adopt: ${err}`);
-          }
         }
       },
     },
