@@ -33,14 +33,9 @@ import {
   saveWorkspace,
   newStableId,
   hasSavedWorkspace,
-  describeSavedWorkspace,
-  isWorkspaceFresh,
-  hasUserDismissedAutoRestore,
-  markAutoRestoreDismissed,
   type Workspace,
 } from "./services/workspace";
 import * as mruShell from "./services/mru-shell";
-import * as pinnedDirs from "./services/pinned-dirs";
 import * as recentCwds from "./services/recent-cwds";
 import { getTabIcon } from "./services/tab-icons";
 import {
@@ -66,7 +61,6 @@ import * as adoptionMemory from "./services/adoption-memory";
 import { GlobalSearch } from "./components/GlobalSearch";
 import { TemplateManager } from "./components/TemplateManager";
 import * as sessionTemplates from "./services/session-templates";
-import * as shellProfiles from "./services/shell-profiles";
 import * as themes from "./services/themes";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { localPeerId } from "./services/relay";
@@ -213,14 +207,6 @@ function App() {
     });
   }
 
-  function formatRelativeTime(ts: number): string {
-    const diff = Date.now() - ts;
-    if (diff < 60_000) return "just now";
-    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} min ago`;
-    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} hr ago`;
-    return `${Math.floor(diff / 86_400_000)} day${Math.floor(diff / 86_400_000) === 1 ? "" : "s"} ago`;
-  }
-
   function setLayoutPreset(preset: LayoutPreset) {
     const t = activeTabId();
     if (!t) return;
@@ -243,17 +229,8 @@ function App() {
   let ptyListenerReady: Promise<void> | null = null;
   // Terminal cell dimensions (measured once at startup, updated on font change).
   const [cellDimensions, setCellDimensions] = createSignal<{ width: number; height: number } | null>(null);
-  // Most recently used shell (for welcome screen)
+  // Most recently used shell (sorts the empty-tab shell picker)
   const [mruShellPath, setMruShellPath] = createSignal<string | null>(null);
-  const [pinnedDirsList, setPinnedDirsList] = createSignal<pinnedDirs.PinnedDir[]>([]);
-  const [recentCwdsList, setRecentCwdsList] = createSignal<recentCwds.RecentCwd[]>([]);
-  // v4: distinct row of previously-adopted dirs sourced from persisted
-  // adoption memory. Refreshed when the welcome screen mounts and after
-  // every adoption (so the user immediately sees their action stick).
-  const [previouslyAdoptedCwds, setPreviouslyAdoptedCwds] = createSignal<string[]>(
-    adoptionMemory.recentAdoptedCwds(5),
-  );
-  const [showAutoRestoreBanner, setShowAutoRestoreBanner] = createSignal(false);
   const [welcomeShellIndex, setWelcomeShellIndex] = createSignal(0);
   const [draggedTabId, setDraggedTabId] = createSignal<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = createSignal<string | null>(null);
@@ -265,7 +242,6 @@ function App() {
   const [adoptionParentFilter, setAdoptionParentFilter] = createSignal<string | null>(null);
   const [showGlobalSearch, setShowGlobalSearch] = createSignal(false);
   const [showTemplateManager, setShowTemplateManager] = createSignal(false);
-  const [shellProfilesList, setShellProfilesList] = createSignal<shellProfiles.ShellProfile[]>([]);
   const [currentTheme, setCurrentTheme] = createSignal<themes.TerminalTheme>(themes.BUILT_IN_THEMES[0]);
   const [showThemePicker, setShowThemePicker] = createSignal(false);
 
@@ -303,40 +279,15 @@ function App() {
       setCellDimensions(cachedDims);
     }
 
-    // Load MRU shell for welcome screen
+    // Load MRU shell — sorts the empty-tab shell picker.
     const mru = await mruShell.getMruShell();
     if (mru) {
       setMruShellPath(mru.path);
     }
-    
-    // Load pinned directories
-    const pinned = await pinnedDirs.getPinnedDirs();
-    setPinnedDirsList(pinned);
-    
-    // Refresh pinned dirs when changed
-    const refreshPinnedDirs = async () => {
-      const dirs = await pinnedDirs.getPinnedDirs();
-      setPinnedDirsList(dirs);
-    };
-    window.addEventListener("pinned-dirs-changed", refreshPinnedDirs);
-    
-    // Load recent CWDs
-    const recent = await recentCwds.getTopRecentCwds(5);
-    setRecentCwdsList(recent);
-    
-    // Load shell profiles
-    const profiles = await shellProfiles.getProfiles();
-    setShellProfilesList(profiles);
-    
+
     // Load selected theme
     const theme = await themes.getSelectedTheme();
     setCurrentTheme(theme);
-    
-    // Check if we should show auto-restore banner
-    const withinHours = terminalPrefs().autoRestoreWithinHours;
-    if (isWorkspaceFresh(withinHours) && !hasUserDismissedAutoRestore()) {
-      setShowAutoRestoreBanner(true);
-    }
 
     // Single IPC with caching — detects shells once, avoids double $PATH walk.
     const shellsData = await ipc.listShellsWithDefault();
@@ -359,9 +310,15 @@ function App() {
       }
     }).then(() => {});
 
-    // Always show the welcome screen on launch — the user explicitly chooses
-    // whether to restore a previous session or start fresh. Avoids the
-    // surprise of auto-spawning shells the user didn't ask for.
+    // Auto-restore the previous workspace on launch — the last thing each
+    // tab was left with is what it opens with. If there's nothing to
+    // restore (first run, or every tab was left empty), open a single
+    // empty tab that shows the shell picker.
+    if (hasSavedWorkspace()) {
+      await hydrateWorkspace(loadWorkspace());
+    } else {
+      openEmptyTab();
+    }
     setHydrated(true);
 
     // Wire up `termgrid://` deep-links in the background — delivery is rare
@@ -425,10 +382,10 @@ function App() {
       e.preventDefault();
       addPaneToActiveTab();
     }
-    // Ctrl+T: new tab with new pane
+    // Ctrl+T: new tab — opens the shell picker, user chooses what to launch
     if (e.ctrlKey && e.key === "t") {
       e.preventDefault();
-      addPaneToNewTab();
+      openEmptyTab();
     }
     // Ctrl+W: close active pane
     if (e.ctrlKey && e.key === "w") {
@@ -532,7 +489,6 @@ function App() {
       envNames: snap.env_vars.map((e) => e.name),
       mode,
     });
-    setPreviouslyAdoptedCwds(adoptionMemory.recentAdoptedCwds(5));
 
     // Build seed commands per strategy. Each command is written to the
     // PTY after the shell prompt initializes, in order.
@@ -739,9 +695,9 @@ function App() {
     {
       id: "new-tab",
       name: "New Tab",
-      description: "Create a new tab with a single pane",
+      description: "Open a new tab and choose a shell to launch",
       keywords: ["create"],
-      action: () => addPaneToNewTab(),
+      action: () => openEmptyTab(),
     },
     {
       id: "close-pane",
@@ -842,7 +798,6 @@ function App() {
         const count = await adoptionMemory.importAdoptionMemory();
         if (count > 0) {
           console.info(`Imported ${count} adoption entries`);
-          setPreviouslyAdoptedCwds(adoptionMemory.recentAdoptedCwds(5));
         } else if (count === 0) {
           console.info("No new entries to import");
         }
@@ -982,6 +937,51 @@ function App() {
     };
   }
 
+  /** Is the active tab a fresh, paneless tab (the shell-picker state)? */
+  const activeTabIsEmpty = () => {
+    if (tabs().length === 0) return true;
+    const tab = tabs().find((t) => t.id === activeTabId());
+    return !!tab && tab.paneIds.length === 0;
+  };
+
+  /**
+   * Open a new tab with no pane. It renders the shell picker until the
+   * user chooses a shell, at which point the pane lands in this same tab.
+   */
+  function openEmptyTab() {
+    const tabId = `tab-${nextTabId++}`;
+    const tab: TabState = {
+      id: tabId,
+      name: `Tab ${tabs().length + 1}`,
+      paneIds: [],
+    };
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tabId);
+  }
+
+  /**
+   * Launch a shell from the empty-tab picker. Lands the pane in the active
+   * (empty) tab when there is one; otherwise falls back to a fresh tab.
+   */
+  async function launchShellInActiveTab(shell?: string) {
+    const tabId = activeTabId();
+    const tab = tabs().find((t) => t.id === tabId);
+    if (!tabId || !tab) {
+      await addPaneToNewTab(shell);
+      return;
+    }
+    const pane = await createPaneState(shell);
+    setPanes((prev) => [...prev, pane]);
+    setTabs((prev) =>
+      prev.map((t) => (t.id === tabId ? { ...t, paneIds: [...t.paneIds, pane.id] } : t)),
+    );
+    autoNameTabFromCwd(tabId, pane.backendId);
+    if (shell) {
+      mruShell.recordShellUse(shell);
+      setMruShellPath(shell);
+    }
+  }
+
   async function hydrateWorkspace(ws: Workspace) {
     const newTabs: TabState[] = [];
     const newPanes: PaneState[] = [];
@@ -1001,11 +1001,8 @@ function App() {
         const savedOffsets = ws.edgeOffsets?.[sid];
         if (savedOffsets) newEdgeOffsets[pane.id] = savedOffsets;
       }
-      if (tabPanes.length === 0) {
-        const pane = await createPaneState(undefined, { shouldRestoreSnapshot: false });
-        newPanes.push(pane);
-        tabPanes.push(pane.id);
-      }
+      // A tab saved with no panes restores as an empty shell-picker tab —
+      // honoring "the last thing it was left with is what it opens with".
       newTabs.push({ id: t.id, name: t.name, paneIds: tabPanes });
       newTabLayouts[t.id] = ((t.layoutPreset as LayoutPreset) ?? fallbackLayout);
       if (parseInt(t.id.replace(/\D/g, ""), 10) >= nextTabId) {
@@ -1148,7 +1145,8 @@ function App() {
     if (remaining.length > 0) {
       setActiveTabId(remaining[remaining.length - 1].id);
     } else {
-      setActiveTabId(null);
+      // Never sit on a tabless window — open a fresh shell-picker tab.
+      openEmptyTab();
     }
   }
 
@@ -1440,8 +1438,8 @@ function App() {
             <div class="add-menu">
               <button
                 class="add-menu-item"
-                title="Create a new tab with one fresh terminal pane (Ctrl+T)"
-                onClick={() => { addPaneToNewTab(); setShowAddMenu(false); }}
+                title="Open a new tab and pick a shell to launch (Ctrl+T)"
+                onClick={() => { openEmptyTab(); setShowAddMenu(false); }}
               >
                 <span class="add-icon">+</span> New Tab
                 <span class="add-shortcut">⌃T</span>
@@ -1509,83 +1507,18 @@ function App() {
         ref={tilingRef}
         onDblClick={resetAllOffsets}
       >
-        <Show when={tabs().length === 0}>
+        <Show when={activeTabIsEmpty()}>
           <div class="welcome">
             <div class="welcome-card">
               <div class="welcome-logo">▦</div>
               <div class="welcome-title">TermGrid</div>
-              <div class="welcome-sub">Start a session to begin.</div>
-              
-              {/* Auto-restore banner for fresh sessions */}
-              <Show when={showAutoRestoreBanner()}>
-                <div class="auto-restore-banner">
-                  <div class="arb-icon">💡</div>
-                  <div class="arb-content">
-                    <div class="arb-title">Your recent session is ready to restore</div>
-                    <div class="arb-actions">
-                      <button
-                        class="arb-btn primary"
-                        onClick={() => {
-                          hydrateWorkspace(loadWorkspace());
-                          setShowAutoRestoreBanner(false);
-                        }}
-                      >
-                        Restore Now
-                      </button>
-                      <button
-                        class="arb-btn"
-                        onClick={() => {
-                          markAutoRestoreDismissed();
-                          setShowAutoRestoreBanner(false);
-                        }}
-                      >
-                        Start Fresh
-                      </button>
-                    </div>
-                  </div>
-                  <button
-                    class="arb-close"
-                    onClick={() => {
-                      markAutoRestoreDismissed();
-                      setShowAutoRestoreBanner(false);
-                    }}
-                    title="Dismiss"
-                  >
-                    ✕
-                  </button>
-                </div>
-              </Show>
-
-              <Show when={hasSavedWorkspace()}>
-                {(() => {
-                  const info = describeSavedWorkspace();
-                  const ago = info.savedAt
-                    ? formatRelativeTime(info.savedAt)
-                    : "earlier";
-                  return (
-                    <button
-                      class="welcome-restore-btn"
-                      onClick={() => hydrateWorkspace(loadWorkspace())}
-                      title="Reopen the tabs and panes you had at the last close. Scrollback comes back; live shells start fresh."
-                    >
-                      <span class="restore-icon">↻</span>
-                      <span class="restore-main">
-                        <span class="restore-title">Restore last session</span>
-                        <span class="restore-meta">
-                          {info.tabCount} tab{info.tabCount === 1 ? "" : "s"} · {info.paneCount} pane{info.paneCount === 1 ? "" : "s"} · {ago}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })()}
-                <div class="welcome-divider"><span>or start fresh</span></div>
-              </Show>
+              <div class="welcome-sub">Pick a shell to start this tab.</div>
 
               <div class="welcome-shells">
                 <Show
                   when={shells().length > 0 || defaultShellInfo()}
                   fallback={
-                    <button class="welcome-shell-btn default" onClick={() => addPaneToNewTab()}>
+                    <button class="welcome-shell-btn default" onClick={() => launchShellInActiveTab()}>
                       <span class="ws-default-tag">DEFAULT</span>
                       <span class="ws-name">Default shell</span>
                       <span class="ws-kind">Opens your system shell</span>
@@ -1622,7 +1555,7 @@ function App() {
                                 }
                               }}
                               class={`welcome-shell-btn ${isDefault(s) && !isMruShell ? "default" : ""} ${isMruShell ? "mru" : ""} ${isMacBash ? "warn" : ""} ${idx() === welcomeShellIndex() ? "kb-focused" : ""}`}
-                              onClick={() => addPaneToNewTab(s.path)}
+                              onClick={() => launchShellInActiveTab(s.path)}
                               onMouseEnter={() => {
                                 prefetchTerminalModules();
                                 setWelcomeShellIndex(idx());
@@ -1650,103 +1583,6 @@ function App() {
                   })()}
                 </Show>
               </div>
-              
-              {/* Pinned Directories */}
-              <Show when={pinnedDirsList().length > 0}>
-                <div class="welcome-divider"><span>quick links</span></div>
-                <div class="welcome-pinned-dirs">
-                  <For each={pinnedDirsList()}>
-                    {(dir) => {
-                      const displayName = dir.label ?? pinnedDirs.pathBaseName(dir.path);
-                      return (
-                        <button
-                          class="pinned-dir-btn"
-                          onClick={() => addPaneToNewTab(undefined, dir.path)}
-                          title={dir.path}
-                        >
-                          <span class="pd-icon">📁</span>
-                          <span class="pd-name">{displayName}</span>
-                          <span class="pd-path">{dir.path}</span>
-                        </button>
-                      );
-                    }}
-                  </For>
-                </div>
-              </Show>
-              
-              {/* Shell Profiles */}
-              <Show when={shellProfilesList().length > 0}>
-                <div class="welcome-divider"><span>shell profiles</span></div>
-                <div class="welcome-pinned-dirs">
-                  <For each={shellProfilesList().slice(0, 5)}>
-                    {(profile) => {
-                      return (
-                        <button
-                          class="pinned-dir-btn profile"
-                          onClick={() => addPaneToNewTab(profile.shell, profile.cwd, profile.commands)}
-                          title={`${profile.shell}${profile.cwd ? ` in ${profile.cwd}` : ""}${profile.commands.length > 0 ? ` · ${profile.commands.length} command(s)` : ""}`}
-                        >
-                          <span class="pd-icon">⚙️</span>
-                          <span class="pd-name">{profile.name}</span>
-                          <span class="pd-path">
-                            {profile.cwd || profile.shell}
-                            {profile.commands.length > 0 && ` · ${profile.commands.length} cmd`}
-                          </span>
-                        </button>
-                      );
-                    }}
-                  </For>
-                </div>
-              </Show>
-              
-              {/* Recent CWDs */}
-              <Show when={recentCwdsList().length > 0 && pinnedDirsList().length === 0 && shellProfilesList().length === 0}>
-                <div class="welcome-divider"><span>recent directories</span></div>
-                <div class="welcome-pinned-dirs">
-                  <For each={recentCwdsList()}>
-                    {(cwd) => {
-                      const displayName = recentCwds.pathBaseName(cwd.path);
-                      return (
-                        <button
-                          class="pinned-dir-btn recent"
-                          onClick={() => addPaneToNewTab(undefined, cwd.path)}
-                          title={cwd.path}
-                        >
-                          <span class="pd-icon">🕒</span>
-                          <span class="pd-name">{displayName}</span>
-                          <span class="pd-path">{cwd.path}</span>
-                        </button>
-                      );
-                    }}
-                  </For>
-                </div>
-              </Show>
-
-              {/* v4: previously-adopted directories. Distinct from
-                  "recent CWDs" because adoption is intentional — the user
-                  said "this dir is one I work in elsewhere too" — so it
-                  deserves its own row. */}
-              <Show when={previouslyAdoptedCwds().length > 0}>
-                <div class="welcome-divider"><span>previously adopted</span></div>
-                <div class="welcome-pinned-dirs">
-                  <For each={previouslyAdoptedCwds()}>
-                    {(path) => {
-                      const displayName = recentCwds.pathBaseName(path);
-                      return (
-                        <button
-                          class="pinned-dir-btn recent"
-                          onClick={() => addPaneToNewTab(undefined, path)}
-                          title={`Adopted previously: ${path}`}
-                        >
-                          <span class="pd-icon">\u21AA</span>
-                          <span class="pd-name">{displayName}</span>
-                          <span class="pd-path">{path}</span>
-                        </button>
-                      );
-                    }}
-                  </For>
-                </div>
-              </Show>
 
               <div class="welcome-tips">
                 <kbd>Ctrl+T</kbd> new tab · <kbd>Ctrl+N</kbd> split · <kbd>Ctrl+R</kbd> history
