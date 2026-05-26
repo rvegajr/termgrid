@@ -351,15 +351,23 @@ function App() {
     // including the last commands typed — survive a restart.
     {
       const appWin = getCurrentWebviewWindow();
+      let closing = false;
       appWin.onCloseRequested(async (event) => {
+        // Re-entrancy guard: a second close request shouldn't restart the flush.
+        if (closing) return;
+        closing = true;
         event.preventDefault();
         try {
+          // Per-flush .catch so one stuck save can't reject the whole batch;
+          // short cap so the window always closes promptly.
           await Promise.race([
-            Promise.all(panes().map((p) => p.snapshot.flush())),
-            new Promise((resolve) => setTimeout(resolve, 2000)),
+            Promise.all(panes().map((p) => p.snapshot.flush().catch(() => {}))),
+            new Promise((resolve) => setTimeout(resolve, 800)),
           ]);
-        } catch {}
-        await appWin.destroy();
+        } finally {
+          // Always close, even if flushing threw — never leave the window stuck.
+          appWin.destroy().catch(() => {});
+        }
       });
     }
 
