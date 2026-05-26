@@ -1,11 +1,18 @@
-import { createSignal, For, Show, onCleanup } from "solid-js";
+import { createSignal, For, Show, onCleanup, onMount } from "solid-js";
 import { terminalPrefs, updatePrefs, FONT_OPTIONS } from "../services/terminal-prefs";
 import { clearWorkspace } from "../services/workspace";
 import { purgeAllSnapshots } from "../services/pane-snapshot";
+import { defaultShell, setDefaultShell } from "../services/default-shell";
+import * as ipc from "../services/tauri-ipc";
 
 export function SettingsMenu() {
   const [open, setOpen] = createSignal(false);
+  const [shells, setShells] = createSignal<ipc.ShellInfo[]>([]);
   let rootRef: HTMLDivElement | undefined;
+
+  onMount(async () => {
+    setShells(await ipc.listShells());
+  });
 
   function onDocClick(e: MouseEvent) {
     if (!rootRef) return;
@@ -64,6 +71,19 @@ export function SettingsMenu() {
               />
               <span>Blink</span>
             </label>
+          </div>
+          <div class="settings-row">
+            <label class="settings-label">Default shell</label>
+            <select
+              class="settings-select"
+              value={defaultShell() ?? ""}
+              onChange={(e) => setDefaultShell(e.currentTarget.value || null)}
+            >
+              <option value="">System default</option>
+              <For each={shells()}>
+                {(s) => <option value={s.path}>{s.name}</option>}
+              </For>
+            </select>
           </div>
           <div class="settings-row">
             <label class="settings-label">Workspace</label>

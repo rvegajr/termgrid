@@ -1523,6 +1523,7 @@ html, body, #root {
   align-items: flex-start;
   min-width: 110px;
   transition: all 0.15s;
+  position: relative;
 }
 .welcome-shell-btn:hover {
   background: #313244;
@@ -1575,6 +1576,25 @@ html, body, #root {
 }
 .welcome-shell-btn.warn { opacity: 0.6; border-color: #f9e2af; }
 .welcome-shell-btn.warn:hover { opacity: 1; }
+.welcome-shell-btn.user-default {
+  border-color: #f9e2af;
+  box-shadow: 0 0 0 1px rgba(249, 226, 175, 0.55);
+}
+.ws-default-star {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 15px;
+  line-height: 1;
+  color: #f9e2af;
+  opacity: 0.3;
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 0.12s, transform 0.12s;
+}
+.welcome-shell-btn:hover .ws-default-star { opacity: 0.65; }
+.ws-default-star:hover { opacity: 1; transform: scale(1.2); }
+.ws-default-star.active { opacity: 1; }
 .ws-warn-tag {
   position: absolute;
   top: -8px;
