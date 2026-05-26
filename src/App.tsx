@@ -1,4 +1,4 @@
-import { createSignal, createMemo, onMount, For, createEffect, Show, batch } from "solid-js";
+import { createSignal, createMemo, onMount, For, Index, createEffect, Show, batch } from "solid-js";
 import "@xterm/xterm/css/xterm.css";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -40,6 +40,7 @@ import {
   type Workspace,
 } from "./services/workspace";
 import * as mruShell from "./services/mru-shell";
+import { defaultShell, setDefaultShell } from "./services/default-shell";
 import * as pinnedDirs from "./services/pinned-dirs";
 import * as recentCwds from "./services/recent-cwds";
 import { getTabIcon } from "./services/tab-icons";
@@ -257,6 +258,8 @@ function App() {
   const [welcomeShellIndex, setWelcomeShellIndex] = createSignal(0);
   const [draggedTabId, setDraggedTabId] = createSignal<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = createSignal<string | null>(null);
+  // Tab right-click menu for setting the global default shell. Null = closed.
+  const [tabMenuPos, setTabMenuPos] = createSignal<{ x: number; y: number } | null>(null);
   const [showCommandPalette, setShowCommandPalette] = createSignal(false);
   const [showAdoptionPicker, setShowAdoptionPicker] = createSignal(false);
   const [adoptionParentFilter, setAdoptionParentFilter] = createSignal<string | null>(null);
@@ -377,10 +380,29 @@ function App() {
       }
     });
 
-    // Best-effort: flush pending scrollback before window closes.
+    // Best-effort: flush pending scrollback on page reload (HMR / refresh).
     window.addEventListener("beforeunload", () => {
       for (const p of panes()) p.snapshot.flush();
     });
+
+    // Reliable flush on actual window close: beforeunload's async flush() can't
+    // finish before the webview is torn down, so intercept the native close,
+    // await every pane's snapshot save (capped so a stuck save can't block the
+    // close), then destroy the window. This is what makes the full buffer —
+    // including the last commands typed — survive a restart.
+    {
+      const appWin = getCurrentWebviewWindow();
+      appWin.onCloseRequested(async (event) => {
+        event.preventDefault();
+        try {
+          await Promise.race([
+            Promise.all(panes().map((p) => p.snapshot.flush())),
+            new Promise((resolve) => setTimeout(resolve, 2000)),
+          ]);
+        } catch {}
+        await appWin.destroy();
+      });
+    }
 
     // Per-pane "where am I" poller. Cheap — one sysinfo refresh + optional
     // `ps -o args=` per ssh hit. Runs every 3s; we get an extra refresh
@@ -927,6 +949,20 @@ function App() {
         }
       },
     },
+    {
+      id: "default-shell-system",
+      name: "Set Default Shell: System default",
+      description: "New tabs and panes launch the system default shell",
+      keywords: ["default", "shell", "launch", "system"],
+      action: () => setDefaultShell(null),
+    },
+    ...shells().map((s) => ({
+      id: `default-shell-${s.path}`,
+      name: `Set Default Shell: ${s.name}`,
+      description: `New tabs and panes launch ${s.path}`,
+      keywords: ["default", "shell", "launch", s.name],
+      action: () => setDefaultShell(s.path),
+    })),
   ];
 
   async function createPaneState(shell?: string, opts?: { stableId?: string; shouldRestoreSnapshot?: boolean; cwd?: string }): Promise<PaneState> {
@@ -956,7 +992,10 @@ function App() {
     const cols = Math.max(40, Math.floor(containerWidth / cellWidth));
     const rows = Math.max(10, Math.floor(containerHeight / cellHeight));
     
-    const result = await ipc.createPane(shell, opts?.cwd, cols, rows);
+    // Fall back to the user's global default shell when no explicit shell was
+    // requested; null/undefined means "let the backend pick the system default".
+    const effectiveShell = shell ?? defaultShell() ?? undefined;
+    const result = await ipc.createPane(effectiveShell, opts?.cwd, cols, rows);
     const id = `pane-${nextPaneId++}`;
     const stableId = opts?.stableId ?? newStableId();
     const shouldRestoreSnapshot = opts?.shouldRestoreSnapshot ?? false;
@@ -1013,6 +1052,26 @@ function App() {
     // Snapshot keyed by stableId so scrollback survives PTY rotation.
     const snapshot = attachSnapshot(stableId, terminal);
     rememberPaneId(stableId);
+
+    // Restore prior scrollback HERE — before this pane is registered in panes()
+    // and starts receiving live PTY output. Writing the saved buffer first (as a
+    // single atomic write) means the freshly-spawned shell's banner appends
+    // cleanly below it, instead of interleaving with the restore and corrupting
+    // the cursor. A divider marks the boundary between restored history and the
+    // live session.
+    if (shouldRestoreSnapshot) {
+      const restored = await restoreSnapshot(stableId, terminal);
+      if (restored) {
+        // Only add a boundary divider if the restored buffer doesn't already
+        // end with one — prevents dividers stacking across restarts where no
+        // new output was added since the last restore. (Box-drawing rule chars
+        // don't occur in normal shell output, so this tail check is safe.)
+        const tail = restored.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").slice(-200);
+        if (!tail.includes("────────")) {
+          terminal.write("\r\n\x1b[2m──────── restored ────────\x1b[0m\r\n");
+        }
+      }
+    }
     attachMeta(result.pane_id, terminal, shell);
     attachRecorder(result.pane_id, terminal, () => localPeerId());
     // Eager first probe so the host badge paints with real data instead
@@ -1036,7 +1095,7 @@ function App() {
       terminal,
       fitAddon,
       searchAddon,
-      shellType: shell ?? "default",
+      shellType: effectiveShell ?? "default",
       snapshot,
       shouldRestoreSnapshot,
     };
@@ -1056,6 +1115,10 @@ function App() {
         const meta = ws.panes[sid];
         const pane = await createPaneState(meta?.shellType, { stableId: sid, shouldRestoreSnapshot: true });
         newPanes.push(pane);
+        // Register immediately so the pty-output listener can find this pane
+        // when its freshly-spawned shell emits output, while later panes in the
+        // workspace are still spawning. (Snapshot replay is separate.)
+        setPanes(prev => [...prev, pane]);
         tabPanes.push(pane.id);
         // Translate persisted edge offsets stableId → runtime pane.id.
         const savedOffsets = ws.edgeOffsets?.[sid];
@@ -1064,6 +1127,7 @@ function App() {
       if (tabPanes.length === 0) {
         const pane = await createPaneState(undefined, { shouldRestoreSnapshot: false });
         newPanes.push(pane);
+        setPanes(prev => [...prev, pane]);
         tabPanes.push(pane.id);
       }
       newTabs.push({ id: t.id, name: t.name, paneIds: tabPanes });
@@ -1078,7 +1142,6 @@ function App() {
     // Batch all signal writes so the persist effect sees the final state once,
     // not the intermediate stages where (e.g.) tabs is set but tabLayouts isn't.
     batch(() => {
-      setPanes(newPanes);
       setTabs(newTabs);
       setTabLayouts(newTabLayouts);
       setEdgeOffsets(newEdgeOffsets);
@@ -1139,7 +1202,12 @@ function App() {
   async function addGridTab(paneCount: number, preset: LayoutPreset, label: string) {
     const newPanes: PaneState[] = [];
     for (let i = 0; i < paneCount; i++) {
-      newPanes.push(await createPaneState());
+      const pane = await createPaneState();
+      newPanes.push(pane);
+      // Register each pane immediately so the pty-output listener can find it
+      // when the shell's startup banner arrives — otherwise early panes' first
+      // output is dropped while the rest of the grid is still spawning.
+      setPanes(prev => [...prev, pane]);
     }
     const tabId = `tab-${nextTabId++}`;
     const tab: TabState = {
@@ -1148,7 +1216,6 @@ function App() {
       paneIds: newPanes.map((p) => p.id),
     };
     batch(() => {
-      setPanes(prev => [...prev, ...newPanes]);
       setTabs(prev => [...prev, tab]);
       setActiveTabId(tabId);
       setTabLayouts(prev => ({ ...prev, [tabId]: preset }));
@@ -1285,13 +1352,6 @@ function App() {
       } catch {}
     }
 
-    // Restore prior scrollback (if any) — keyed by stable id, so it
-    // survives across launches even though the PTY backend id rotates.
-    // Skip the IPC for brand-new panes (always returns null).
-    if (pane.shouldRestoreSnapshot) {
-      restoreSnapshot(pane.stableId, pane.terminal);
-    }
-
     // Refit on container resize
     const observer = new ResizeObserver(() => {
       pane.fitAddon.fit();
@@ -1420,6 +1480,10 @@ function App() {
               <div
                 class={`tab ${tab.id === activeTabId() ? "active" : ""} ${draggedTabId() === tab.id ? "dragging" : ""} ${dragOverTabId() === tab.id ? "drag-over" : ""}`}
                 onClick={() => setActiveTabId(tab.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setTabMenuPos({ x: e.clientX, y: e.clientY });
+                }}
                 draggable={true}
                 onDragStart={(e) => {
                   setDraggedTabId(tab.id);
@@ -1539,6 +1603,42 @@ function App() {
           )}
         </div>
       </div>
+
+      {/* Tab right-click menu: set the global default shell for new tabs/panes */}
+      <Show when={tabMenuPos()}>
+        {(pos) => (
+          <>
+            <div
+              style={{ position: "fixed", inset: "0", "z-index": 999 }}
+              onClick={() => setTabMenuPos(null)}
+              onContextMenu={(e) => { e.preventDefault(); setTabMenuPos(null); }}
+            />
+            <div
+              class="add-menu"
+              style={{ position: "fixed", left: `${pos().x}px`, top: `${pos().y}px`, "z-index": 1000 }}
+            >
+              <button
+                class="add-menu-item"
+                title="New tabs and panes launch the system default shell"
+                onClick={() => { setDefaultShell(null); setTabMenuPos(null); }}
+              >
+                <span class="add-icon">{defaultShell() === null ? "✓" : ""}</span> Default shell: System default
+              </button>
+              <For each={shells()}>
+                {(s) => (
+                  <button
+                    class="add-menu-item"
+                    title={`New tabs and panes launch ${s.path}`}
+                    onClick={() => { setDefaultShell(s.path); setTabMenuPos(null); }}
+                  >
+                    <span class="add-icon">{defaultShell() === s.path ? "✓" : ""}</span> Default shell: {s.name}
+                  </button>
+                )}
+              </For>
+            </div>
+          </>
+        )}
+      </Show>
 
       {/* Remote viewer — shown when active session is a peer */}
       {(() => {
@@ -1681,7 +1781,7 @@ function App() {
                                   setTimeout(() => el.focus(), 100);
                                 }
                               }}
-                              class={`welcome-shell-btn ${isDefault(s) && !isMruShell ? "default" : ""} ${isMruShell ? "mru" : ""} ${isMacBash ? "warn" : ""} ${idx() === welcomeShellIndex() ? "kb-focused" : ""}`}
+                              class={`welcome-shell-btn ${isDefault(s) && !isMruShell ? "default" : ""} ${isMruShell ? "mru" : ""} ${isMacBash ? "warn" : ""} ${idx() === welcomeShellIndex() ? "kb-focused" : ""} ${defaultShell() === s.path ? "user-default" : ""}`}
                               onClick={() => addPaneToNewTab(s.path)}
                               onMouseEnter={() => {
                                 prefetchTerminalModules();
@@ -1695,11 +1795,25 @@ function App() {
                                 <span class="ws-mru-tag">LAST USED</span>
                               </Show>
                               <Show when={isDefault(s) && !isMruShell}>
-                                <span class="ws-default-tag">DEFAULT</span>
+                                <span class="ws-default-tag">SYSTEM</span>
                               </Show>
                               <Show when={isMacBash}>
                                 <span class="ws-warn-tag">OLD</span>
                               </Show>
+                              <span
+                                class={`ws-default-star ${defaultShell() === s.path ? "active" : ""}`}
+                                role="button"
+                                tabindex={-1}
+                                title={defaultShell() === s.path
+                                  ? "This is your default shell — click to clear"
+                                  : "Set as default shell for new tabs/panes"}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDefaultShell(defaultShell() === s.path ? null : s.path);
+                                }}
+                              >
+                                {defaultShell() === s.path ? "★" : "☆"}
+                              </span>
                               <span class="ws-name">{s.name}</span>
                               <span class="ws-kind">{s.path}</span>
                             </button>
@@ -1814,10 +1928,10 @@ function App() {
             </div>
           </div>
         </Show>
-        <For each={tabs()}>
+        <Index each={tabs()}>
           {(tab) => {
-            const isActive = () => tab.id === activeTabId();
-            const tabPanes = () => getPanesForTab(tab.id);
+            const isActive = () => tab().id === activeTabId();
+            const tabPanes = () => getPanesForTab(tab().id);
             const tabLayouts = () =>
               isActive()
                 ? computedLayouts()
@@ -1855,7 +1969,7 @@ function App() {
               </div>
             );
           }}
-        </For>
+        </Index>
       </div>
 
       {/* Status Bar */}
@@ -1871,6 +1985,12 @@ function App() {
         <span>session: {activeSession()}</span>
         <span>|</span>
         <span>layout: {layoutPreset()}</span>
+        <span>|</span>
+        <span>default shell: {(() => {
+          const d = defaultShell();
+          if (!d) return "system";
+          return shells().find((s) => s.path === d)?.name ?? d;
+        })()}</span>
         <span>|</span>
         <span>dbl-click edge/bg to snap back</span>
         <span>|</span>

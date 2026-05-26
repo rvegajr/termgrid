@@ -86,17 +86,19 @@ export function attachSnapshot(paneId: string, terminal: Terminal): SnapshotHand
   return { serialize, scheduleSave, flush, destroy };
 }
 
-export async function restoreSnapshot(paneId: string, terminal: Terminal): Promise<boolean> {
+/** Restores saved scrollback into the terminal. Returns the written content
+ *  (so callers can inspect it), or null if there was nothing to restore. */
+export async function restoreSnapshot(paneId: string, terminal: Terminal): Promise<string | null> {
   try {
     const saved = await ipc.snapshotLoad(paneId);
     if (saved && saved.length > 0) {
       terminal.write(saved);
-      return true;
+      return saved;
     }
   } catch (e) {
     console.warn("[snapshot] restore failed:", e);
   }
-  return false;
+  return null;
 }
 
 export function rememberPaneId(id: string) {
