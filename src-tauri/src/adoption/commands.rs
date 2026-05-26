@@ -307,4 +307,3 @@ pub fn replay_env_in_cwd_cmd(shell: String, cwd: String) -> Vec<super::types::En
 pub fn install_shell_plugins_cmd() -> Result<super::plugin_installer::InstallResult, String> {
     super::plugin_installer::install_plugins()
 }
-
