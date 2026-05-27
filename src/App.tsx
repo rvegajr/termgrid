@@ -317,9 +317,17 @@ function App() {
     // tab was left with is what it opens with. If there's nothing to
     // restore (first run, or every tab was left empty), open a single
     // empty tab that shows the shell picker.
-    if (hasSavedWorkspace()) {
-      await hydrateWorkspace(loadWorkspace());
-    } else {
+    try {
+      if (hasSavedWorkspace()) {
+        await hydrateWorkspace(loadWorkspace());
+      }
+    } catch (err) {
+      console.error("Workspace restore failed:", err);
+    }
+    // If restore produced no tabs (nothing saved, or it failed), fall back to
+    // a single empty shell-picker tab. Always enable persistence afterward —
+    // never leave the app unable to save because restore hiccuped.
+    if (tabs().length === 0) {
       openEmptyTab();
     }
     setHydrated(true);
@@ -871,9 +879,17 @@ function App() {
     const cols = Math.max(40, Math.floor(containerWidth / cellWidth));
     const rows = Math.max(10, Math.floor(containerHeight / cellHeight));
     
+    // `"default"` is a display sentinel we store in shellType (and persist)
+    // to mean "system default shell" — it is NOT a real shell path. Restoring
+    // a workspace passes shellType straight back in here, so we must map the
+    // sentinel (and empty string) to undefined; otherwise ipc.createPane tries
+    // to spawn a binary literally named "default", throws, and aborts the
+    // whole restore. This is the root cause of "restore does nothing" on
+    // sessions saved before per-pane shell paths were recorded.
+    const requestedShell = shell && shell !== "default" ? shell : undefined;
     // Fall back to the user's global default shell when no explicit shell was
     // requested; null/undefined means "let the backend pick the system default".
-    const effectiveShell = shell ?? defaultShell() ?? undefined;
+    const effectiveShell = requestedShell ?? defaultShell() ?? undefined;
     const result = await ipc.createPane(effectiveShell, opts?.cwd, cols, rows);
     const id = `pane-${nextPaneId++}`;
     const stableId = opts?.stableId ?? newStableId();
@@ -1037,7 +1053,17 @@ function App() {
       const tabPanes: string[] = [];
       for (const sid of t.paneStableIds) {
         const meta = ws.panes[sid];
-        const pane = await createPaneState(meta?.shellType, { stableId: sid, shouldRestoreSnapshot: true });
+        // Spawn each pane independently. If one fails (e.g. a stale shell
+        // path that no longer exists), skip it rather than aborting the
+        // entire restore — losing one pane is recoverable; losing the whole
+        // session (and silently disabling persistence) is not.
+        let pane: PaneState;
+        try {
+          pane = await createPaneState(meta?.shellType, { stableId: sid, shouldRestoreSnapshot: true });
+        } catch (err) {
+          console.error(`Failed to restore pane ${sid} (shell ${meta?.shellType ?? "default"}):`, err);
+          continue;
+        }
         newPanes.push(pane);
         // Register immediately so the pty-output listener can find this pane
         // when its freshly-spawned shell emits output, while later panes in the
