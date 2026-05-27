@@ -11,7 +11,7 @@ import * as ipc from "./tauri-ipc";
  * - On-disk snapshot is the serialized terminal state (ANSI included).
  *   Real-world ~0.5–2 MB per pane; saved every 5 s while dirty.
  */
-const DEBOUNCE_MS = 5000;
+const DEBOUNCE_MS = 1500;
 const STABLE_KEY = "termgrid.paneIds";
 
 export interface SnapshotHandle {

@@ -339,37 +339,13 @@ function App() {
       }
     });
 
-    // Best-effort: flush pending scrollback on page reload (HMR / refresh).
+    // Flush pending scrollback on close/reload. We do NOT intercept the native
+    // window close (no onCloseRequested / preventDefault) — that is what kept
+    // the X button from working. beforeunload fires on window close and reload;
+    // the flush is best-effort, kept current by the short snapshot debounce.
     window.addEventListener("beforeunload", () => {
       for (const p of panes()) p.snapshot.flush();
     });
-
-    // Reliable flush on actual window close: beforeunload's async flush() can't
-    // finish before the webview is torn down, so intercept the native close,
-    // await every pane's snapshot save (capped so a stuck save can't block the
-    // close), then destroy the window. This is what makes the full buffer —
-    // including the last commands typed — survive a restart.
-    {
-      const appWin = getCurrentWebviewWindow();
-      let closing = false;
-      appWin.onCloseRequested(async (event) => {
-        // Re-entrancy guard: a second close request shouldn't restart the flush.
-        if (closing) return;
-        closing = true;
-        event.preventDefault();
-        try {
-          // Per-flush .catch so one stuck save can't reject the whole batch;
-          // short cap so the window always closes promptly.
-          await Promise.race([
-            Promise.all(panes().map((p) => p.snapshot.flush().catch(() => {}))),
-            new Promise((resolve) => setTimeout(resolve, 800)),
-          ]);
-        } finally {
-          // Always close, even if flushing threw — never leave the window stuck.
-          appWin.destroy().catch(() => {});
-        }
-      });
-    }
 
     // Per-pane "where am I" poller. Cheap — one sysinfo refresh + optional
     // `ps -o args=` per ssh hit. Runs every 3s; we get an extra refresh
