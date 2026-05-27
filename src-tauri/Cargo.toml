@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["full"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 portable-pty = "0.8"
-rusqlite = { version = "0.32", features = ["bundled", "modern_sqlite"] }
+rusqlite = { version = "0.40", features = ["bundled", "modern_sqlite"] }
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 dirs-next = "2"
