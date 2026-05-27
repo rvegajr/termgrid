@@ -51,7 +51,7 @@ windows = { version = "0.58", features = [
 # Re-add when generating a Tauri signing keypair — see RELEASING.md §3.
 
 [dev-dependencies]
-mockall = "0.13"
+mockall = "0.14"
 tempfile = "3"
 
 [profile.release]
