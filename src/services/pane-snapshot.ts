@@ -118,6 +118,36 @@ export function forgetPaneId(id: string) {
   } catch {}
 }
 
+/**
+ * Delete snapshot files that no longer belong to any persisted pane.
+ *
+ * Snapshots are only meaningful if their stableId is still referenced by the
+ * saved workspace (a pane we might restore). Everything else is debris from
+ * closed panes and long-dead sessions — over time these accumulate unbounded
+ * (we found 56 stale files in the wild, partly from a close-path bug that
+ * removed the wrong key from the live id list).
+ *
+ * Pass the set of stableIds the saved workspace still references; any snapshot
+ * not in that set is removed. Best-effort and safe to run on startup: at that
+ * point runtime panes are derived entirely from the saved workspace, so no
+ * live pane's snapshot can be mistaken for an orphan. The id-tracking list is
+ * also rewritten to just the kept ids.
+ */
+export async function purgeOrphanSnapshots(keepStableIds: Set<string>): Promise<void> {
+  try {
+    const all = await ipc.snapshotList();
+    if (!Array.isArray(all)) return;
+    const orphans = all.filter((id) => !keepStableIds.has(id));
+    await Promise.all(orphans.map((id) => ipc.snapshotDelete(id).catch(() => {})));
+  } catch (e) {
+    console.warn("[snapshot] orphan purge failed:", e);
+  }
+  // Re-sync the tracked-id list to exactly the kept ids.
+  try {
+    localStorage.setItem(STABLE_KEY, JSON.stringify([...keepStableIds]));
+  } catch {}
+}
+
 /** Wipe every on-disk snapshot file — used by "Reset workspace". */
 export async function purgeAllSnapshots(): Promise<void> {
   try {

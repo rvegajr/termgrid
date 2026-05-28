@@ -35,6 +35,7 @@ import {
   hasSavedWorkspace,
   type Workspace,
 } from "./services/workspace";
+import { reconcileWorkspace } from "./services/workspace-reconcile";
 import * as mruShell from "./services/mru-shell";
 import { defaultShell, setDefaultShell } from "./services/default-shell";
 import * as recentCwds from "./services/recent-cwds";
@@ -49,6 +50,7 @@ import {
   restoreSnapshot,
   rememberPaneId,
   forgetPaneId,
+  purgeOrphanSnapshots,
   type SnapshotHandle,
 } from "./services/pane-snapshot";
 import { attachMeta, detachMeta, feedRaw, paneMetaMap } from "./services/pane-meta";
@@ -87,6 +89,26 @@ interface TabState {
 
 let nextPaneId = 0;
 let nextTabId = 0;
+
+/**
+ * The workspace loaded at launch — captured before hydration so the persist
+ * effect can guarantee a restore hiccup never deletes tabs/panes the user
+ * didn't close. See services/workspace-reconcile.ts.
+ */
+let restoreBaseline: Workspace = {
+  tabs: [],
+  activeTabId: null,
+  panes: {},
+  edgeOffsets: {},
+  defaultLayoutPreset: "auto",
+};
+
+/**
+ * stableIds the user has explicitly closed this session. Only these authorize
+ * removing a pane from the persisted workspace; anything else missing from
+ * runtime is treated as "failed to restore" and is preserved for next launch.
+ */
+const closedStableIds = new Set<string>();
 
 function App() {
   const [panes, setPanes] = createSignal<PaneState[]>([]);
@@ -317,9 +339,15 @@ function App() {
     // tab was left with is what it opens with. If there's nothing to
     // restore (first run, or every tab was left empty), open a single
     // empty tab that shows the shell picker.
+    //
+    // Capture the on-disk workspace as the reconcile baseline FIRST, before we
+    // touch any runtime signal. The persist effect merges runtime against this
+    // baseline so an incomplete restore can never overwrite/shrink the saved
+    // session (see services/workspace-reconcile.ts).
+    restoreBaseline = loadWorkspace();
     try {
       if (hasSavedWorkspace()) {
-        await hydrateWorkspace(loadWorkspace());
+        await hydrateWorkspace(restoreBaseline);
       }
     } catch (err) {
       console.error("Workspace restore failed:", err);
@@ -331,6 +359,14 @@ function App() {
       openEmptyTab();
     }
     setHydrated(true);
+
+    // Garbage-collect snapshot files left behind by closed panes / old
+    // sessions. Keep anything the saved workspace still references (those may
+    // get restored or preserved by reconcile); drop the rest. Best-effort,
+    // runs off the critical path.
+    Promise.resolve().then(() =>
+      purgeOrphanSnapshots(new Set(Object.keys(restoreBaseline.panes))),
+    );
 
     // Wire up `termgrid://` deep-links in the background — delivery is rare
     // and tolerates a small delay. Don't block welcome on it.
@@ -660,6 +696,7 @@ function App() {
   const loadTemplateLayout = async (template: sessionTemplates.SessionTemplate) => {
     // Clear current session
     for (const pane of panes()) {
+      closedStableIds.add(pane.stableId); // explicit close — authorize removal from persistence
       pane.snapshot.destroy(true);
       detachMeta(pane.backendId);
       forgetPaneHost(pane.backendId);
@@ -1181,6 +1218,7 @@ function App() {
     const lastPaneId = tab.paneIds[tab.paneIds.length - 1];
     const pane = panes().find(p => p.id === lastPaneId);
     if (pane) {
+      closedStableIds.add(pane.stableId); // explicit close — authorize removal from persistence
       await pane.snapshot.destroy(true);
       detachMeta(pane.backendId);
       forgetPaneHost(pane.backendId);
@@ -1206,11 +1244,13 @@ function App() {
     for (const paneId of tab.paneIds) {
       const pane = panes().find(p => p.id === paneId);
       if (pane) {
+        closedStableIds.add(pane.stableId); // explicit close — authorize removal from persistence
         pane.snapshot.destroy(true);
         detachMeta(pane.backendId);
         forgetPaneHost(pane.backendId);
         paneEls.delete(pane.backendId);
-        forgetPaneId(pane.backendId);
+        detachRecorder(pane.backendId);
+        forgetPaneId(pane.stableId); // was: backendId — wrong key left orphan entries in the snapshot id list
         pane.terminal.dispose();
         ipc.closePane(pane.backendId);
       }
@@ -1361,7 +1401,6 @@ function App() {
     // wipe the existing saved workspace before the user has a chance to
     // click "Restore last session". Only save when real content exists.
     if (ts.length === 0) return;
-    void active;
     // Translate edge offsets from runtime pane.id keys → stableId keys.
     const offsetsByStable: Record<string, EdgeOffsets> = {};
     for (const [runtimeId, eo] of Object.entries(offsets)) {
@@ -1371,7 +1410,7 @@ function App() {
       if (eo.left === 0 && eo.top === 0 && eo.right === 0 && eo.bottom === 0) continue;
       offsetsByStable[pane.stableId] = eo;
     }
-    const ws: Workspace = {
+    const runtimeWs: Workspace = {
       tabs: ts.map((t) => ({
         id: t.id,
         name: t.name,
@@ -1380,13 +1419,20 @@ function App() {
           .filter((x): x is string => !!x),
         layoutPreset: layouts[t.id] ?? "auto",
       })),
-      activeTabId: activeTabId(),
+      activeTabId: active,
       panes: Object.fromEntries(
         ps.map((p) => [p.stableId, { stableId: p.stableId, shellType: p.shellType }]),
       ),
       edgeOffsets: offsetsByStable,
       defaultLayoutPreset: "auto",
     };
+    // Reconcile against the launch baseline so a failed/partial restore can
+    // never delete tabs or panes — only an explicit close (tombstone) can.
+    const ws = reconcileWorkspace({
+      runtime: runtimeWs,
+      baseline: restoreBaseline,
+      tombstones: closedStableIds,
+    });
     saveWorkspace(ws);
   });
 
