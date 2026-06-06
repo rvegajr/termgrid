@@ -54,6 +54,7 @@ import {
   type SnapshotHandle,
 } from "./services/pane-snapshot";
 import { attachMeta, feedRaw, paneMetaMap, decodePtyChunk } from "./services/pane-meta";
+import { findPaneIdByCwd } from "./services/dir-match";
 import { refreshPaneHost, refreshPaneHostsBatch } from "./services/pane-host";
 import { disposePaneResources } from "./services/pane-lifecycle";
 import { deriveAutoTabName } from "./services/tab-naming";
@@ -143,6 +144,17 @@ function App() {
 
   /** Handle `termgrid://open?path=...&mode=...` requests from the OS. */
   async function handleOpenRequest(req: OpenRequest) {
+    // Intelligent reuse: focus an already-open pane for this folder.
+    const entries = panes().map(p => ({ paneId: p.id, cwd: paneMetaMap()[p.backendId]?.cwd }));
+    const existingId = findPaneIdByCwd(req.path, entries);
+    if (existingId) {
+      const tab = tabs().find(t => t.paneIds.includes(existingId));
+      if (tab) setActiveTabId(tab.id);
+      setFocusedPaneId(existingId);
+      try { panes().find(p => p.id === existingId)?.terminal.focus(); } catch {}
+      return;
+    }
+
     if (req.mode === "new-tab") {
       const pane = await createPaneState();
       const tabId = `tab-${nextTabId++}`;
