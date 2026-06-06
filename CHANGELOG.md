@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.6](https://github.com/rvegajr/termgrid/compare/v0.1.5...v0.1.6) (2026-06-06)
+
+
+### Features
+
+* auto-restore last session on launch; new tabs show shell picker ([89743cb](https://github.com/rvegajr/termgrid/commit/89743cbac6835c671520f08a65506e18cfb4e71e))
+
+
+### Bug Fixes
+
+* never let an incomplete restore delete tabs/panes (reconcile on save) ([c65fef8](https://github.com/rvegajr/termgrid/commit/c65fef8fdb8eda80b414277b978a2ee529dec0d6))
+* restore failed silently for sessions saved with the "default" shell sentinel ([7040f87](https://github.com/rvegajr/termgrid/commit/7040f87926ace2f335a6362d999472c738f4b316))
+* window X not closing — remove flush-on-close interceptor ([e71c4fc](https://github.com/rvegajr/termgrid/commit/e71c4fc8bbb9fce17c1f2d9d42a74d6365cea3a0))
+
+
+### Performance
+
+* optimize terminal I/O hot path and fix PTY lifecycle leaks ([571cd3d](https://github.com/rvegajr/termgrid/commit/571cd3d96ba5d2ad50dc4ef50a2df3bb86f7aa56))
+
+
+### Refactor
+
+* remove drag-to-pane adoption monitor and platform stubs ([3afa04c](https://github.com/rvegajr/termgrid/commit/3afa04c54fd5a3041cb7015992f8791b078fef98))
+
 ## [0.1.5](https://github.com/rvegajr/termgrid/compare/v0.1.4...v0.1.5) (2026-05-15)
 
 
