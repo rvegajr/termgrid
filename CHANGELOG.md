@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/rvegajr/termgrid/compare/v0.1.6...v0.1.7) (2026-06-06)
+
+
+### Features
+
+* intelligent folder deduplication for "Open in TermGrid" context menu ([c674cd5](https://github.com/rvegajr/termgrid/commit/c674cd59f54ba3f2ec8294ee4b7ca9f413f68665))
+
 ## [0.1.6](https://github.com/rvegajr/termgrid/compare/v0.1.5...v0.1.6) (2026-06-06)
 
 

@@ -1,6 +1,6 @@
 {
   "name": "termgrid-app",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Auto-tiling cross-platform terminal with cross-device session linking via PeerJS.",
   "type": "module",
   "scripts": {
