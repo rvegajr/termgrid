@@ -40,9 +40,9 @@ pub use types::{AdoptableSession, SessionSnapshot, SshTarget};
 /// when no ssh descendant exists or argv parsing fails.
 pub fn find_ssh_descendant(root_pid: u32) -> Option<SshTarget> {
     use sysinfo::{ProcessRefreshKind, RefreshKind, System};
-    let sys = System::new_with_specifics(
-        RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
-    );
+    // Use minimal refresh - just name and parent (not env/cmd/disk which are expensive)
+    let sys =
+        System::new_with_specifics(RefreshKind::new().with_processes(ProcessRefreshKind::new()));
     // Walk children via the System directly to avoid exposing discover internals.
     let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
     let mut names: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
@@ -53,6 +53,17 @@ pub fn find_ssh_descendant(root_pid: u32) -> Option<SshTarget> {
             children.entry(ppid.as_u32()).or_default().push(pid_u32);
         }
     }
+    find_ssh_in_tree(root_pid, &names, &children)
+}
+
+/// Pure tree-walk logic for finding ssh descendants (extracted for testing).
+/// Given a root pid, process names, and parent-child relationships, walks the
+/// tree and returns the first ssh/mosh target found.
+pub fn find_ssh_in_tree(
+    root_pid: u32,
+    names: &std::collections::HashMap<u32, String>,
+    children: &std::collections::HashMap<u32, Vec<u32>>,
+) -> Option<SshTarget> {
     let mut stack = vec![root_pid];
     let mut seen = std::collections::HashSet::new();
     while let Some(pid) = stack.pop() {

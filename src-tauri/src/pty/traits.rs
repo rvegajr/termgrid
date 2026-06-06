@@ -52,6 +52,24 @@ pub trait PtyIntrospect: Send + Sync {
     fn process_id(&self, pane_id: &PaneId) -> Option<u32>;
 }
 
+/// Observe PTY exit events — ISP: only exit observation responsibility
+///
+/// Register a single handler that fires when any pane's child process exits
+/// for a reason other than an explicit kill(). This allows the frontend to
+/// tombstone exited shells while reclaiming backend resources (file descriptors,
+/// zombie processes, blocked reader threads).
+///
+/// Note: mockall does not support mocking Fn objects, so this trait is not
+/// mockable via the automock macro. Tests use the concrete PtyManager directly.
+pub trait PtyExitObserver: Send + Sync {
+    /// Register the single handler fired once when any pane's child exits
+    /// for a reason other than an explicit kill().
+    ///
+    /// The handler receives the pane_id of the exited pane. Only natural exits
+    /// (shell exited on its own) trigger this; explicit kill() calls suppress it.
+    fn set_exit_handler(&self, handler: Box<dyn Fn(PaneId) + Send + Sync>);
+}
+
 /// Detect available shells on the system
 #[cfg_attr(test, mockall::automock)]
 pub trait ShellDetector: Send + Sync {

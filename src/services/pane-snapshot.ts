@@ -10,8 +10,11 @@ import * as ipc from "./tauri-ipc";
  * - xterm scrollback set to 100k lines (~10–20 MB RAM/pane).
  * - On-disk snapshot is the serialized terminal state (ANSI included).
  *   Real-world ~0.5–2 MB per pane; saved every 5 s while dirty.
+ * - Snapshot saves are bounded to 10k scrollback lines to avoid expensive
+ *   full-buffer serialization for panes with large history (e.g. 100k lines).
  */
-const DEBOUNCE_MS = 1500;
+const DEBOUNCE_MS = 4500; // Raised from 1.5s to ~5s to reduce serialize frequency
+const SNAPSHOT_SCROLLBACK_CAP = 10000; // Bound serialize cost (restores up to 10k lines)
 const STABLE_KEY = "termgrid.paneIds";
 
 export interface SnapshotHandle {
@@ -51,7 +54,7 @@ export function attachSnapshot(paneId: string, terminal: Terminal): SnapshotHand
       if (!dirty || destroyed) return;
       dirty = false;
       try {
-        await ipc.snapshotSave(paneId, serialize.serialize());
+        await ipc.snapshotSave(paneId, serialize.serialize({ scrollback: SNAPSHOT_SCROLLBACK_CAP }));
       } catch (e) {
         console.warn("[snapshot] save failed:", e);
       }
@@ -65,7 +68,7 @@ export function attachSnapshot(paneId: string, terminal: Terminal): SnapshotHand
     }
     if (!destroyed) {
       try {
-        await ipc.snapshotSave(paneId, serialize.serialize());
+        await ipc.snapshotSave(paneId, serialize.serialize({ scrollback: SNAPSHOT_SCROLLBACK_CAP }));
       } catch (e) {
         console.warn("[snapshot] flush failed:", e);
       }

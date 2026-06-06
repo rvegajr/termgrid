@@ -4485,6 +4485,7 @@ dependencies = [
 name = "termgrid"
 version = "0.1.5"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "dirs-next",
  "libc",

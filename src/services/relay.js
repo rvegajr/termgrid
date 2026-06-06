@@ -130,6 +130,8 @@ export function sendInput(paneId, data) {
 
 /** Forward pane output bytes to all linked peers — used when hosting. */
 export function broadcastOutput(paneId, bytes) {
+  // Skip encoding work when no peers are connected (common case)
+  if (connections.size === 0) return;
   broadcast({ type: "output", paneId, data: bytesToB64(bytes) });
 }
 

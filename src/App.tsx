@@ -1,4 +1,4 @@
-import { createSignal, createMemo, onMount, For, Index, createEffect, Show, batch } from "solid-js";
+import { createSignal, createMemo, onMount, For, Index, createEffect, Show, batch, createRoot } from "solid-js";
 import "@xterm/xterm/css/xterm.css";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -25,6 +25,7 @@ import {
   broadcastOutput,
   broadcastPanes,
   remoteSessions,
+  b64ToBytes,
 } from "./services/relay";
 import { RemoteViewer } from "./components/RemoteViewer";
 import { terminalPrefs, fontStack, loadCachedCellDimensions, saveCellDimensions } from "./services/terminal-prefs";
@@ -49,13 +50,14 @@ import {
   attachSnapshot,
   restoreSnapshot,
   rememberPaneId,
-  forgetPaneId,
   purgeOrphanSnapshots,
   type SnapshotHandle,
 } from "./services/pane-snapshot";
-import { attachMeta, detachMeta, feedRaw, paneMetaMap } from "./services/pane-meta";
-import { refreshPaneHost, forgetPaneHost } from "./services/pane-host";
-import { attachRecorder, detachRecorder, feedHistoryRaw } from "./services/history";
+import { attachMeta, feedRaw, paneMetaMap, decodePtyChunk } from "./services/pane-meta";
+import { refreshPaneHost, refreshPaneHostsBatch } from "./services/pane-host";
+import { disposePaneResources } from "./services/pane-lifecycle";
+import { deriveAutoTabName } from "./services/tab-naming";
+import { attachRecorder, feedHistoryRaw } from "./services/history";
 import { PaneLabel } from "./components/PaneLabel";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 import { AdoptionPicker } from "./components/AdoptionPicker";
@@ -79,6 +81,7 @@ interface PaneState {
   shellType: string;
   snapshot: SnapshotHandle;
   shouldRestoreSnapshot: boolean; // false for brand-new panes, true for hydrated ones
+  resizeObserver?: ResizeObserver; // connected in mountTerminal, disconnected in disposePaneResources
 }
 
 interface TabState {
@@ -116,9 +119,18 @@ function App() {
   const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
   const [shells, setShells] = createSignal<ipc.ShellInfo[]>([]);
   const [defaultShellInfo, setDefaultShellInfo] = createSignal<ipc.ShellInfo | null>(null);
+  // Panes whose shells have exited naturally (tombstoned - scrollback preserved, polling stops)
+  const [exitedPaneIds, setExitedPaneIds] = createSignal<Set<string>>(new Set());
   // Per-tab layout preset. The TitleBar shows the active tab's preset and
   // changing it only affects that tab. New tabs default to "auto".
   const [tabLayouts, setTabLayouts] = createSignal<Record<string, LayoutPreset>>({});
+  
+  // Memoized pane lookup map for O(1) access in hot paths (pty-output listener)
+  const paneIndex = createMemo(() => {
+    const m = new Map<string, PaneState>();
+    for (const p of panes()) m.set(p.backendId, p);
+    return m;
+  });
   const layoutPreset = (): LayoutPreset => {
     const t = activeTabId();
     return (t && tabLayouts()[t]) || "auto";
@@ -191,42 +203,42 @@ function App() {
   function autoNameTabFromCwd(tabId: string, paneBackendId: string) {
     let hasNamed = false;
     
-    createEffect(() => {
-      if (hasNamed) return;
-      
-      const meta = paneMetaMap()[paneBackendId];
-      const cwd = meta?.cwd;
-      if (!cwd) return;
-
-      // Check if the tab still exists and hasn't been renamed
-      const tab = tabs().find(t => t.id === tabId);
-      if (!tab) {
+    // Wrap effect in createRoot so it can be disposed (prevents leak)
+    createRoot((dispose) => {
+      createEffect(() => {
+        if (hasNamed) {
+          // Named once, tear down the effect
+          dispose();
+          return;
+        }
+        
+        const meta = paneMetaMap()[paneBackendId];
+        const tab = tabs().find(t => t.id === tabId);
+        
+        // Tab is gone, tear down
+        if (!tab) {
+          hasNamed = true;
+          dispose();
+          return;
+        }
+        
+        const tabNumber = tabs().findIndex(t => t.id === tabId) + 1;
+        const newName = deriveAutoTabName(meta, tab.name, tabNumber);
+        
+        // No name derived yet, keep waiting
+        if (newName === null) return;
+        
+        // Apply the name
+        setTabs(prev =>
+          prev.map(t =>
+            t.id === tabId ? { ...t, name: newName } : t
+          )
+        );
+        
+        // Mark as named and tear down
         hasNamed = true;
-        return;
-      }
-
-      // Check if user has manually renamed (doesn't match default pattern)
-      const tabNumber = tabs().findIndex(t => t.id === tabId) + 1;
-      const defaultName = `Tab ${tabNumber}`;
-      if (tab.name !== defaultName) {
-        // User renamed it, don't override
-        hasNamed = true;
-        return;
-      }
-
-      // Set name from CWD basename or shell type
-      const basename = pathBaseName(cwd);
-      const shellType = meta?.shell;
-      const newName = basename || shellType || `Tab ${tabNumber}`;
-      
-      setTabs(prev =>
-        prev.map(t =>
-          t.id === tabId ? { ...t, name: newName } : t
-        )
-      );
-
-      // Mark as named to prevent future updates
-      hasNamed = true;
+        dispose();
+      });
     });
   }
 
@@ -321,19 +333,41 @@ function App() {
 
     // Set up PTY output listener in parallel — createPaneState will await this
     // before spawning, but we don't block the welcome card on it.
-    ptyListenerReady = listen<{ pane_id: string; data: number[] }>("pty-output", (event) => {
-      const pane = panes().find(p => p.backendId === event.payload.pane_id);
+    ptyListenerReady = listen<{ pane_id: string; data: string }>("pty-output", (event) => {
+      const pane = paneIndex().get(event.payload.pane_id);
       if (pane) {
-        const bytes = new Uint8Array(event.payload.data);
-        feedRaw(pane.backendId, bytes);
+        // Decode base64 to bytes (~3x smaller payload vs JSON number array)
+        const bytes = b64ToBytes(event.payload.data);
+        // Decode once and pass the text to all consumers (avoids double decode + allocation)
+        const text = decodePtyChunk(bytes);
+        feedRaw(pane.backendId, bytes, text);
         try {
-          feedHistoryRaw(pane.backendId, new TextDecoder("utf-8", { fatal: false }).decode(bytes));
+          feedHistoryRaw(pane.backendId, text);
         } catch {}
         pane.terminal.write(bytes);
         // Mirror to any linked peer that's watching us
         broadcastOutput(pane.backendId, bytes);
       }
     }).then(() => {});
+
+    // Set up PTY exit listener — fires when a shell exits naturally (not via explicit kill)
+    listen<{ pane_id: string }>("pty-exit", (event) => {
+      const pane = paneIndex().get(event.payload.pane_id);
+      if (!pane) return;
+      
+      // Mark as exited (idempotent)
+      setExitedPaneIds(prev => {
+        const newSet = new Set(prev);
+        newSet.add(pane.backendId);
+        return newSet;
+      });
+      
+      // Write dim marker to terminal
+      pane.terminal.write("\r\n\x1b[2m[process exited]\x1b[0m\r\n");
+      
+      // Flush final snapshot
+      pane.snapshot.flush().catch(e => console.warn("[pty-exit] snapshot flush failed:", e));
+    });
 
     // Auto-restore the previous workspace on launch — the last thing each
     // tab was left with is what it opens with. If there's nothing to
@@ -394,9 +428,13 @@ function App() {
     // Per-pane "where am I" poller. Cheap — one sysinfo refresh + optional
     // `ps -o args=` per ssh hit. Runs every 3s; we get an extra refresh
     // right after spawn (`createPaneState`) so the first paint isn't blank.
+    // Uses batched IPC to scan process tree once instead of per-pane.
     setInterval(() => {
-      for (const p of panes()) {
-        refreshPaneHost(p.backendId).catch(() => {});
+      const exited = exitedPaneIds();
+      const activePanes = panes().filter(p => !exited.has(p.backendId));
+      const paneIds = activePanes.map(p => p.backendId);
+      if (paneIds.length > 0) {
+        refreshPaneHostsBatch(paneIds).catch(() => {});
       }
     }, 3000);
 
@@ -696,15 +734,7 @@ function App() {
   const loadTemplateLayout = async (template: sessionTemplates.SessionTemplate) => {
     // Clear current session
     for (const pane of panes()) {
-      closedStableIds.add(pane.stableId); // explicit close — authorize removal from persistence
-      pane.snapshot.destroy(true);
-      detachMeta(pane.backendId);
-      forgetPaneHost(pane.backendId);
-      paneEls.delete(pane.backendId);
-      detachRecorder(pane.backendId);
-      forgetPaneId(pane.stableId);
-      pane.terminal.dispose();
-      await ipc.closePane(pane.backendId);
+      await disposePaneResources(pane, { paneEls, closedStableIds });
     }
     setPanes([]);
     setTabs([]);
@@ -1218,15 +1248,7 @@ function App() {
     const lastPaneId = tab.paneIds[tab.paneIds.length - 1];
     const pane = panes().find(p => p.id === lastPaneId);
     if (pane) {
-      closedStableIds.add(pane.stableId); // explicit close — authorize removal from persistence
-      await pane.snapshot.destroy(true);
-      detachMeta(pane.backendId);
-      forgetPaneHost(pane.backendId);
-      paneEls.delete(pane.backendId);
-      detachRecorder(pane.backendId);
-      forgetPaneId(pane.stableId);
-      pane.terminal.dispose();
-      await ipc.closePane(pane.backendId);
+      await disposePaneResources(pane, { paneEls, closedStableIds });
       setPanes(prev => prev.filter(p => p.id !== lastPaneId));
       setTabs(prev =>
         prev.map(t =>
@@ -1244,15 +1266,7 @@ function App() {
     for (const paneId of tab.paneIds) {
       const pane = panes().find(p => p.id === paneId);
       if (pane) {
-        closedStableIds.add(pane.stableId); // explicit close — authorize removal from persistence
-        pane.snapshot.destroy(true);
-        detachMeta(pane.backendId);
-        forgetPaneHost(pane.backendId);
-        paneEls.delete(pane.backendId);
-        detachRecorder(pane.backendId);
-        forgetPaneId(pane.stableId); // was: backendId — wrong key left orphan entries in the snapshot id list
-        pane.terminal.dispose();
-        ipc.closePane(pane.backendId);
+        disposePaneResources(pane, { paneEls, closedStableIds });
       }
     }
     setPanes(prev => prev.filter(p => !tab.paneIds.includes(p.id)));
@@ -1344,6 +1358,8 @@ function App() {
       pane.fitAddon.fit();
     });
     observer.observe(el);
+    // Store observer on pane so disposePaneResources can disconnect it later
+    pane.resizeObserver = observer;
   }
 
   function getActivePanes(): PaneState[] {

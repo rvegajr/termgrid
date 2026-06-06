@@ -347,3 +347,13 @@ export async function paneRemoteContext(
 ): Promise<RemoteContext | null> {
   return invoke<RemoteContext | null>("pane_remote_context", { paneId });
 }
+
+/**
+ * Batched version: scan process tree once and resolve all pane contexts.
+ * More efficient than calling paneRemoteContext for each pane separately.
+ */
+export async function panesRemoteContext(
+  paneIds: string[],
+): Promise<Array<[string, RemoteContext | null]>> {
+  return invoke<Array<[string, RemoteContext | null]>>("panes_remote_context", { paneIds });
+}

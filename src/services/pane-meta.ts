@@ -54,6 +54,21 @@ const buffers = new Map<string, PaneBuf>();
 
 const TAIL_BYTES = 4096;
 
+// Singleton decoder for the hot path (per-chunk decoding in pty-output listener)
+const ptyDecoder = new TextDecoder("utf-8", { fatal: false });
+
+/**
+ * Decode PTY output bytes to UTF-8 text. Used in the hot path for per-chunk
+ * decoding. Reuses a single TextDecoder instance to avoid allocation overhead.
+ */
+export function decodePtyChunk(bytes: Uint8Array): string {
+  try {
+    return ptyDecoder.decode(bytes, { stream: false });
+  } catch {
+    return "";
+  }
+}
+
 export function attachMeta(paneId: string, terminal: Terminal, shell?: string) {
   buffers.set(paneId, { buf: "", shell });
   if (shell) patchMeta(paneId, { shell, source: "init" });
@@ -78,17 +93,18 @@ export function detachMeta(paneId: string) {
 /**
  * Feed raw bytes (pre-xterm-decode) for OSC sniffing. The byte path catches
  * OSC sequences before xterm potentially eats them.
+ * @param text Optional pre-decoded text (pass when already decoded in hot path to avoid redundant decode)
  */
-export function feedRaw(paneId: string, bytes: Uint8Array) {
-  const text = utf8Decode(bytes);
+export function feedRaw(paneId: string, bytes: Uint8Array, text?: string) {
+  const decoded = text ?? utf8Decode(bytes);
   const cur = buffers.get(paneId);
   if (cur) {
-    cur.buf = (cur.buf + text).slice(-TAIL_BYTES);
+    cur.buf = (cur.buf + decoded).slice(-TAIL_BYTES);
   }
   // Scan for OSC sequences and apply
   let m: RegExpExecArray | null;
   OSC_RE.lastIndex = 0;
-  while ((m = OSC_RE.exec(text)) !== null) {
+  while ((m = OSC_RE.exec(decoded)) !== null) {
     handleOsc(paneId, m[1], m[2]);
   }
 }

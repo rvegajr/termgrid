@@ -1,8 +1,15 @@
 use crate::pty::traits::*;
 use crate::state::AppState;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::Serialize;
 use std::thread;
 use tauri::{AppHandle, Emitter, State};
+
+/// Encode PTY output bytes as base64 for IPC transport.
+/// Base64 is ~33% smaller and cheaper to parse than JSON number arrays.
+fn encode_output(data: &[u8]) -> String {
+    BASE64.encode(data)
+}
 
 #[derive(Serialize)]
 pub struct CreatePaneResult {
@@ -64,7 +71,7 @@ pub fn default_shell(state: State<AppState>) -> ShellInfo {
 #[derive(Clone, Serialize)]
 struct PtyOutputEvent {
     pane_id: String,
-    data: Vec<u8>,
+    data: String, // base64-encoded bytes
 }
 
 #[tauri::command]
@@ -103,12 +110,22 @@ pub fn create_pane(
 
     let pid = pane_id.clone();
     thread::spawn(move || {
-        while let Ok(data) = rx.recv() {
+        const MAX_COALESCE: usize = 65536; // 64KB cap for coalesced output
+
+        while let Ok(mut data) = rx.recv() {
+            // Coalesce bursty output: drain queued chunks (no blocking)
+            while data.len() < MAX_COALESCE {
+                match rx.try_recv() {
+                    Ok(chunk) => data.extend_from_slice(&chunk),
+                    Err(_) => break, // No more queued chunks
+                }
+            }
+
             let _ = app.emit(
                 "pty-output",
                 PtyOutputEvent {
                     pane_id: pid.clone(),
-                    data,
+                    data: encode_output(&data),
                 },
             );
         }
@@ -189,6 +206,58 @@ pub fn pane_remote_context(state: State<AppState>, pane_id: String) -> Option<Re
     }
 }
 
+/// Batched version of pane_remote_context: scan process tree once and resolve all panes.
+/// Returns tuples of (pane_id, Option<RemoteContext>).
+#[tauri::command]
+pub fn panes_remote_context(
+    state: State<AppState>,
+    pane_ids: Vec<String>,
+) -> Vec<(String, Option<RemoteContext>)> {
+    use crate::adoption::find_ssh_in_tree;
+    use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+
+    // Build process index once (cheap refresh)
+    let sys =
+        System::new_with_specifics(RefreshKind::new().with_processes(ProcessRefreshKind::new()));
+    let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+    let mut names: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
+    for (pid, proc) in sys.processes() {
+        let pid_u32 = pid.as_u32();
+        names.insert(pid_u32, proc.name().to_string_lossy().into_owned());
+        if let Some(ppid) = proc.parent() {
+            children.entry(ppid.as_u32()).or_default().push(pid_u32);
+        }
+    }
+
+    let local_host = short_hostname();
+
+    // Resolve each pane using the shared index
+    pane_ids
+        .into_iter()
+        .map(|pane_id| {
+            let context = state.pty_introspect.process_id(&pane_id).map(|shell_pid| {
+                if let Some(target) = find_ssh_in_tree(shell_pid, &names, &children) {
+                    let dest = target.destination.clone();
+                    let host_only = dest
+                        .rsplit_once('@')
+                        .map(|(_, h)| h.to_string())
+                        .unwrap_or_else(|| dest.clone());
+                    RemoteContext::Ssh {
+                        destination: dest,
+                        host: host_only,
+                        port: target.port,
+                    }
+                } else {
+                    RemoteContext::Local {
+                        host: local_host.clone(),
+                    }
+                }
+            });
+            (pane_id, context)
+        })
+        .collect()
+}
+
 /// Best-effort short hostname.
 ///
 /// We strip the first `.` onward (so `foo.local` → `foo`, `mac.lan` → `mac`)
@@ -210,4 +279,36 @@ fn short_hostname() -> String {
         .or_else(|| std::env::var("COMPUTERNAME").ok())
         .unwrap_or_else(|| "local".to_string());
     raw.split('.').next().unwrap_or(&raw).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encode_output_round_trip() {
+        // ASCII text
+        let ascii = b"hello world\n";
+        let encoded = encode_output(ascii);
+        let decoded = BASE64.decode(&encoded).unwrap();
+        assert_eq!(ascii, decoded.as_slice());
+
+        // UTF-8 text with multibyte characters
+        let utf8 = "hello 🦀 世界".as_bytes();
+        let encoded = encode_output(utf8);
+        let decoded = BASE64.decode(&encoded).unwrap();
+        assert_eq!(utf8, decoded.as_slice());
+
+        // Binary data (shell ANSI escape sequences)
+        let ansi = b"\x1b[31mred\x1b[0m";
+        let encoded = encode_output(ansi);
+        let decoded = BASE64.decode(&encoded).unwrap();
+        assert_eq!(ansi, decoded.as_slice());
+
+        // Large chunk (simulating coalesced output)
+        let large = vec![0x42u8; 65000];
+        let encoded = encode_output(&large);
+        let decoded = BASE64.decode(&encoded).unwrap();
+        assert_eq!(large, decoded);
+    }
 }

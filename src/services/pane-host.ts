@@ -8,7 +8,7 @@
  */
 
 import { createSignal } from "solid-js";
-import { paneRemoteContext, type RemoteContext } from "./adoption";
+import { paneRemoteContext, panesRemoteContext, type RemoteContext } from "./adoption";
 
 const [hostMap, setHostMap] = createSignal<Record<string, RemoteContext>>({});
 
@@ -34,6 +34,37 @@ export async function refreshPaneHost(paneId: string): Promise<void> {
     const cur = prev[paneId];
     if (cur && sameContext(cur, ctx!)) return prev;
     return { ...prev, [paneId]: ctx! };
+  });
+}
+
+/**
+ * Batched refresh: scan process tree once and resolve all pane contexts.
+ * Much more efficient than calling refreshPaneHost for each pane.
+ */
+export async function refreshPaneHostsBatch(paneIds: string[]): Promise<void> {
+  if (paneIds.length === 0) return;
+  
+  let results: Array<[string, RemoteContext | null]>;
+  try {
+    results = await panesRemoteContext(paneIds);
+  } catch {
+    return;
+  }
+  
+  setHostMap((prev) => {
+    let changed = false;
+    const next = { ...prev };
+    
+    for (const [paneId, ctx] of results) {
+      if (!ctx) continue;
+      const cur = prev[paneId];
+      if (!cur || !sameContext(cur, ctx)) {
+        next[paneId] = ctx;
+        changed = true;
+      }
+    }
+    
+    return changed ? next : prev;
   });
 }
 

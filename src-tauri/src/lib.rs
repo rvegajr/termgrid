@@ -9,6 +9,16 @@ pub mod snapshot;
 pub mod state;
 pub mod window_geometry;
 
+use serde::Serialize;
+use tauri::{Emitter, Manager};
+
+/// Event payload emitted when a PTY child process exits naturally
+/// (not via explicit kill). Frontend uses this to tombstone the pane.
+#[derive(Clone, Serialize)]
+struct PtyExitEvent {
+    pane_id: String,
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app_state = state::AppState::new();
@@ -28,6 +38,7 @@ pub fn run() {
             commands::resize_pane,
             commands::close_pane,
             commands::pane_remote_context,
+            commands::panes_remote_context,
             snapshot::snapshot_save,
             snapshot::snapshot_load,
             snapshot::snapshot_delete,
@@ -49,6 +60,18 @@ pub fn run() {
 
             // Start tracking geometry changes
             window_geometry::start_geometry_tracking(app.handle().clone(), "main".to_string());
+
+            // Wire up PTY exit handler to emit pty-exit events
+            {
+                let app_handle = app.handle().clone();
+                let state = app.state::<state::AppState>();
+
+                state
+                    .pty_exit_observer
+                    .set_exit_handler(Box::new(move |pane_id| {
+                        let _ = app_handle.emit("pty-exit", PtyExitEvent { pane_id });
+                    }));
+            }
 
             Ok(())
         })
