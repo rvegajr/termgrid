@@ -1353,6 +1353,11 @@ html, body, #root {
 .welcome {
   position: absolute;
   inset: 0;
+  /* Sit above the (empty) active tab-layer (z-index: 1); otherwise that
+     transparent full-size layer swallows pointer events and the shell
+     buttons get no hover/click. Only shown when the active tab has no
+     panes, so nothing underneath needs interaction. */
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: center;

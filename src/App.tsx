@@ -94,6 +94,9 @@ interface TabState {
 let nextPaneId = 0;
 let nextTabId = 0;
 
+// Canvas addon class, loaded once and reused for all terminals
+let CanvasAddonClass: typeof import("@xterm/addon-canvas").CanvasAddon | null = null;
+
 /**
  * The workspace loaded at launch — captured before hydration so the persist
  * effect can guarantee a restore hiccup never deletes tabs/panes the user
@@ -937,7 +940,12 @@ function App() {
     if (ptyListenerReady) await ptyListenerReady;
     
     // Lazy-load xterm modules (cached after first load)
-    const { Terminal, FitAddon, SearchAddon, WebLinksAddon } = await loadTerminalModules();
+    const { Terminal, FitAddon, SearchAddon, CanvasAddon, WebLinksAddon } = await loadTerminalModules();
+    
+    // Store CanvasAddon class for use in mountTerminal
+    if (!CanvasAddonClass) {
+      CanvasAddonClass = CanvasAddon;
+    }
     
     // Estimate terminal size before spawning to avoid the visible re-flow.
     // Use either measured cell dimensions or fallback to typical values.
@@ -980,29 +988,7 @@ function App() {
       fontSize: terminalPrefs().fontSize,
       scrollback: terminalPrefs().scrollbackLines,
       fontFamily: fontStack(),
-      theme: {
-        background: theme.background,
-        foreground: theme.foreground,
-        cursor: theme.cursor,
-        cursorAccent: theme.cursorAccent,
-        selectionBackground: theme.selectionBackground,
-        black: theme.black,
-        red: theme.red,
-        green: theme.green,
-        yellow: theme.yellow,
-        blue: theme.blue,
-        magenta: theme.magenta,
-        cyan: theme.cyan,
-        white: theme.white,
-        brightBlack: theme.brightBlack,
-        brightRed: theme.brightRed,
-        brightGreen: theme.brightGreen,
-        brightYellow: theme.brightYellow,
-        brightBlue: theme.brightBlue,
-        brightMagenta: theme.brightMagenta,
-        brightCyan: theme.brightCyan,
-        brightWhite: theme.brightWhite,
-      },
+      theme: themes.buildXtermTheme(theme),
     });
 
     const fitAddon = new FitAddon();
@@ -1307,6 +1293,19 @@ function App() {
 
     pane.terminal.open(el);
     pane.fitAddon.fit();
+    
+    // Load Canvas renderer for better color compatibility in WKWebView.
+    // The Canvas addon uses a 2D canvas context which reliably renders ANSI
+    // colors across different GPU/WebView environments, unlike WebGL which
+    // had issues painting glyphs in the foreground color.
+    if (CanvasAddonClass) {
+      try {
+        pane.terminal.loadAddon(new CanvasAddonClass());
+      } catch (err) {
+        // xterm falls back to the DOM renderer automatically — slower but correct.
+        console.error("[renderer] canvas addon failed, using DOM renderer:", err);
+      }
+    }
 
     // Text drag-drop: drop selected text from another app (or the same
     // window) onto the pane to paste it. Files are intercepted by Tauri
@@ -1330,24 +1329,6 @@ function App() {
       ipc.writePane(pane.backendId, text);
     });
     mountedPanes.add(pane.id);
-    
-    // Defer WebGL addon loading until browser is idle (non-blocking)
-    const loadWebGL = () => {
-      loadTerminalModules().then(({ WebglAddon }) => {
-        try {
-          pane.terminal.loadAddon(new WebglAddon());
-        } catch {
-          // WebGL not available, fallback to canvas
-        }
-      });
-    };
-    
-    // Use requestIdleCallback if available, otherwise setTimeout fallback
-    if ('requestIdleCallback' in window) {
-      requestIdleCallback(loadWebGL);
-    } else {
-      setTimeout(loadWebGL, 100);
-    }
     
     // Measure cell dimensions from the first terminal — used to spawn
     // subsequent panes at the correct size. xterm only exposes these
@@ -1955,48 +1936,28 @@ function App() {
                       
                       // Update all existing terminals
                       for (const pane of panes()) {
-                        pane.terminal.options.theme = {
-                          background: theme.background,
-                          foreground: theme.foreground,
-                          cursor: theme.cursor,
-                          cursorAccent: theme.cursorAccent,
-                          selectionBackground: theme.selectionBackground,
-                          black: theme.black,
-                          red: theme.red,
-                          green: theme.green,
-                          yellow: theme.yellow,
-                          blue: theme.blue,
-                          magenta: theme.magenta,
-                          cyan: theme.cyan,
-                          white: theme.white,
-                          brightBlack: theme.brightBlack,
-                          brightRed: theme.brightRed,
-                          brightGreen: theme.brightGreen,
-                          brightYellow: theme.brightYellow,
-                          brightBlue: theme.brightBlue,
-                          brightMagenta: theme.brightMagenta,
-                          brightCyan: theme.brightCyan,
-                          brightWhite: theme.brightWhite,
-                        };
+                        pane.terminal.options.theme = themes.buildXtermTheme(theme);
                       }
                       
                       setShowThemePicker(false);
                     }}
                     style={{
                       "background": theme.background,
-                      "border-color": currentTheme().id === theme.id ? theme.blue : theme.black,
+                      "border-color": currentTheme().id === theme.id
+                        ? (theme.blue ?? themes.DEFAULT_ANSI.blue)
+                        : (theme.black ?? themes.DEFAULT_ANSI.black),
                     }}
                   >
                     <div class="tp-theme-name" style={{ "color": theme.foreground }}>
                       {theme.name}
                     </div>
                     <div class="tp-theme-preview">
-                      <span style={{ "color": theme.red }}>█</span>
-                      <span style={{ "color": theme.green }}>█</span>
-                      <span style={{ "color": theme.yellow }}>█</span>
-                      <span style={{ "color": theme.blue }}>█</span>
-                      <span style={{ "color": theme.magenta }}>█</span>
-                      <span style={{ "color": theme.cyan }}>█</span>
+                      <span style={{ "color": theme.red ?? themes.DEFAULT_ANSI.red }}>█</span>
+                      <span style={{ "color": theme.green ?? themes.DEFAULT_ANSI.green }}>█</span>
+                      <span style={{ "color": theme.yellow ?? themes.DEFAULT_ANSI.yellow }}>█</span>
+                      <span style={{ "color": theme.blue ?? themes.DEFAULT_ANSI.blue }}>█</span>
+                      <span style={{ "color": theme.magenta ?? themes.DEFAULT_ANSI.magenta }}>█</span>
+                      <span style={{ "color": theme.cyan ?? themes.DEFAULT_ANSI.cyan }}>█</span>
                     </div>
                   </button>
                 )}

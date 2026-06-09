@@ -6,14 +6,14 @@
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { SearchAddon } from "@xterm/addon-search";
-import type { WebglAddon } from "@xterm/addon-webgl";
+import type { CanvasAddon } from "@xterm/addon-canvas";
 import type { WebLinksAddon } from "@xterm/addon-web-links";
 
 export interface TerminalModules {
   Terminal: typeof Terminal;
   FitAddon: typeof FitAddon;
   SearchAddon: typeof SearchAddon;
-  WebglAddon: typeof WebglAddon;
+  CanvasAddon: typeof CanvasAddon;
   WebLinksAddon: typeof WebLinksAddon;
 }
 
@@ -28,11 +28,11 @@ export async function loadTerminalModules(): Promise<TerminalModules> {
     return cachedModules;
   }
 
-  const [xterm, fit, search, webgl, weblinks] = await Promise.all([
+  const [xterm, fit, search, canvas, weblinks] = await Promise.all([
     import("@xterm/xterm"),
     import("@xterm/addon-fit"),
     import("@xterm/addon-search"),
-    import("@xterm/addon-webgl"),
+    import("@xterm/addon-canvas"),
     import("@xterm/addon-web-links"),
   ]);
 
@@ -40,7 +40,7 @@ export async function loadTerminalModules(): Promise<TerminalModules> {
     Terminal: xterm.Terminal,
     FitAddon: fit.FitAddon,
     SearchAddon: search.SearchAddon,
-    WebglAddon: webgl.WebglAddon,
+    CanvasAddon: canvas.CanvasAddon,
     WebLinksAddon: weblinks.WebLinksAddon,
   };
 
@@ -57,7 +57,7 @@ export function prefetchTerminalModules(): void {
     "@xterm/xterm",
     "@xterm/addon-fit",
     "@xterm/addon-search",
-    "@xterm/addon-webgl",
+    "@xterm/addon-canvas",
     "@xterm/addon-web-links",
   ];
 

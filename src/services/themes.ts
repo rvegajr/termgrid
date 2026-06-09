@@ -2,6 +2,7 @@
  * Service for managing terminal color themes.
  */
 
+import type { ITheme } from "@xterm/xterm";
 import * as machineCache from "./machine-cache";
 
 export interface TerminalTheme {
@@ -12,27 +13,68 @@ export interface TerminalTheme {
   cursor: string;
   cursorAccent: string;
   selectionBackground: string;
-  black: string;
-  red: string;
-  green: string;
-  yellow: string;
-  blue: string;
-  magenta: string;
-  cyan: string;
-  white: string;
-  brightBlack: string;
-  brightRed: string;
-  brightGreen: string;
-  brightYellow: string;
-  brightBlue: string;
-  brightMagenta: string;
-  brightCyan: string;
-  brightWhite: string;
+  /**
+   * When true, the 16 ANSI colors are NOT overridden — xterm uses its own
+   * vivid built-in palette (closest to a stock macOS Terminal / iTerm). Use
+   * this when you want programs like `ls`/git to render in their expected
+   * saturated colors rather than a remapped pastel theme palette.
+   */
+  useDefaultAnsi?: boolean;
+  black?: string;
+  red?: string;
+  green?: string;
+  yellow?: string;
+  blue?: string;
+  magenta?: string;
+  cyan?: string;
+  white?: string;
+  brightBlack?: string;
+  brightRed?: string;
+  brightGreen?: string;
+  brightYellow?: string;
+  brightBlue?: string;
+  brightMagenta?: string;
+  brightCyan?: string;
+  brightWhite?: string;
 }
 
 const CACHE_KEY = "selectedTheme";
 
+/**
+ * xterm.js's built-in default ANSI palette (classic, vivid). Used to render
+ * swatch previews for `useDefaultAnsi` themes, and as documentation of what
+ * those themes resolve to at runtime.
+ */
+export const DEFAULT_ANSI = {
+  black: "#000000",
+  red: "#cd0000",
+  green: "#00cd00",
+  yellow: "#cdcd00",
+  blue: "#0000ee",
+  magenta: "#cd00cd",
+  cyan: "#00cdcd",
+  white: "#e5e5e5",
+  brightBlack: "#7f7f7f",
+  brightRed: "#ff0000",
+  brightGreen: "#00ff00",
+  brightYellow: "#ffff00",
+  brightBlue: "#5c5cff",
+  brightMagenta: "#ff00ff",
+  brightCyan: "#00ffff",
+  brightWhite: "#ffffff",
+} as const;
+
 export const BUILT_IN_THEMES: TerminalTheme[] = [
+  {
+    id: "terminal-default",
+    name: "Terminal Default (Vivid)",
+    background: "#1e1e1e",
+    foreground: "#d4d4d4",
+    cursor: "#ffffff",
+    cursorAccent: "#1e1e1e",
+    selectionBackground: "#264f78",
+    useDefaultAnsi: true,
+  },
   {
     id: "catppuccin-mocha",
     name: "Catppuccin Mocha",
@@ -168,4 +210,41 @@ export async function getSelectedTheme(): Promise<TerminalTheme> {
 
 export async function setSelectedTheme(themeId: string): Promise<void> {
   await machineCache.set(CACHE_KEY, themeId);
+}
+
+/**
+ * Build the xterm `ITheme` object for a given theme. For `useDefaultAnsi`
+ * themes, only the base colors (bg/fg/cursor/selection) are set so xterm keeps
+ * its vivid built-in 16-color ANSI palette; otherwise the full palette is
+ * applied. Centralized so the terminal-construction and live-switch paths stay
+ * in sync.
+ */
+export function buildXtermTheme(theme: TerminalTheme): ITheme {
+  const base: ITheme = {
+    background: theme.background,
+    foreground: theme.foreground,
+    cursor: theme.cursor,
+    cursorAccent: theme.cursorAccent,
+    selectionBackground: theme.selectionBackground,
+  };
+  if (theme.useDefaultAnsi) return base;
+  return {
+    ...base,
+    black: theme.black,
+    red: theme.red,
+    green: theme.green,
+    yellow: theme.yellow,
+    blue: theme.blue,
+    magenta: theme.magenta,
+    cyan: theme.cyan,
+    white: theme.white,
+    brightBlack: theme.brightBlack,
+    brightRed: theme.brightRed,
+    brightGreen: theme.brightGreen,
+    brightYellow: theme.brightYellow,
+    brightBlue: theme.brightBlue,
+    brightMagenta: theme.brightMagenta,
+    brightCyan: theme.brightCyan,
+    brightWhite: theme.brightWhite,
+  };
 }
