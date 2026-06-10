@@ -61,9 +61,14 @@ impl PtySpawner for PtyManager {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("CLICOLOR", "1");
-        cmd.env("CLICOLOR_FORCE", "1");
         cmd.env("LSCOLORS", "ExGxBxDxCxEgEdxbxgxcxd");
         cmd.env("TERM_PROGRAM", "TermGrid");
+
+        // A terminal emulator must not let its launcher's color preferences leak
+        // into user shells (IDE tasks, agents, CI all set these).
+        for var in ["NO_COLOR", "FORCE_COLOR", "CLICOLOR_FORCE"] {
+            cmd.env_remove(var);
+        }
 
         let mut child = pair
             .slave
