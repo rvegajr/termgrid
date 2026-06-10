@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.8](https://github.com/rvegajr/termgrid/compare/v0.1.7...v0.1.8) (2026-06-10)
+
+
+### Bug Fixes
+
+* replace WebGL renderer with Canvas addon for reliable ANSI color in WKWebView ([f95bc6c](https://github.com/rvegajr/termgrid/commit/f95bc6c0513f0f1e0e4a297b2efca006cc459195))
+* scrub hostile color-detection env vars from spawned PTY shells ([444302f](https://github.com/rvegajr/termgrid/commit/444302f3d05146ac9e2e83f0b403d73e493ab9ee))
+
 ## [0.1.7](https://github.com/rvegajr/termgrid/compare/v0.1.6...v0.1.7) (2026-06-06)
 
 
